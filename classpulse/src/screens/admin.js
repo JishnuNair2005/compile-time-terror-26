@@ -253,6 +253,8 @@ const styles = StyleSheet.create({
   bigCode: { fontSize: 48, fontWeight: '900', color: '#000066', letterSpacing: 10, marginBottom: 30 },
   qrContainer: { padding: 16, backgroundColor: 'white', borderRadius: 16, elevation: 5 },
   qrImage: { width: 180, height: 180 },
+  qrButton: { flexDirection: 'row', paddingVertical: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0', gap: 10 },
+  qrButtonText: { color: '#64748B', fontWeight: 'bold', letterSpacing: 1.5 },
   setupSub: { color: '#64748B', textAlign: 'center', marginTop: 20, marginBottom: 40 },
   connectionBadge: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 20 },
   pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981' },
@@ -314,4 +316,5 @@ const styles = StyleSheet.create({
   bottomNav: { position: 'absolute', bottom: 0, width: '100%', height: 80, backgroundColor: 'white', flexDirection: 'row', justifyContent: 'space-around', paddingBottom: 20, borderTopWidth: 1, borderTopColor: '#F1F5F9' },
   navTab: { alignItems: 'center', justifyContent: 'center' },
   navLabel: { fontSize: 10, fontWeight: 'bold', color: '#94A3B8', marginTop: 4 }
+  
 });

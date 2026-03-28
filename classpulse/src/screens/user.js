@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   View, 
   Text, 
@@ -10,140 +10,190 @@ import {
   Platform,
   Dimensions,
   ActivityIndicator,
-  Animated
+  Animated,
+  Alert,
+  Modal,      
+  Linking
 } from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons'; 
+import { CameraView, useCameraPermissions } from 'expo-camera';
 
 const { width } = Dimensions.get('window');
 
-// Your current local backend IP
-const API_URL = 'http://192.168.104.109:8000/api/questions'; 
+const API_URL = 'http://10.111.71.65:8000/api/questions'; 
 
 export default function UserScreen() {
   const [isJoined, setIsJoined] = useState(false);
   const [code, setCode] = useState(['', '', '', '']);
   const [status, setStatus] = useState(null);
-  const [isVerifying, setIsVerifying] = useState(false);
   const [confusion, setConfusion] = useState('');
+  const [isVerifying, setIsVerifying] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
-  // NEW: State to lock the screen after submission
   const [isLocked, setIsLocked] = useState(false);
-
-  // NEW: State for our custom dark blue rounded alert
-  const [customAlert, setCustomAlert] = useState({ visible: false, message: '' });
+  const [isOfflineMode] = useState(false); 
   
+  // Timer & Alert States
+  const [timeLeft, setTimeLeft] = useState(0);
+  const [customAlert, setCustomAlert] = useState({ visible: false, message: '', type: 'info' });
   const [userId] = useState(() => 'user_' + Math.random().toString(36).substring(2, 11));
+  
   const inputRefs = [useRef(), useRef(), useRef(), useRef()];
-  const [isOfflineMode, setIsOfflineMode] = useState(false); // NEW: State for toggle
+  const timerRef = useRef(null);
+  const slideAnim = useRef(new Animated.Value(-100)).current;
 
-  // Helper function to show the custom rounded dark blue alert
-  const showCustomAlert = (message) => {
-    setCustomAlert({ visible: true, message });
-    // Auto-hide after 3 seconds
-    setTimeout(() => {
-      setCustomAlert({ visible: false, message: '' });
-    }, 3000);
+  // --- CAMERA STATES ---
+  const [isScanning, setIsScanning] = useState(false);
+  const [permission, requestPermission] = useCameraPermissions();
+
+  // --- TIMER LOGIC ---
+  useEffect(() => {
+    if (timeLeft > 0) {
+      timerRef.current = setInterval(() => {
+        setTimeLeft((prev) => prev - 1);
+      }, 1000);
+    } else if (timeLeft === 0 && isLocked) {
+      setIsLocked(false);
+      setStatus(null);
+      setConfusion('');
+      showCustomAlert("Poll reopened. You can vote again.", "info");
+    }
+    return () => clearInterval(timerRef.current);
+  }, [timeLeft, isLocked]);
+
+  // Formats time exactly like the screenshot (e.g., "01 : 30")
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins < 10 ? '0' : ''}${mins} : ${secs < 10 ? '0' : ''}${secs}`;
   };
+
+  // --- PREMIUM CUSTOM ALERT ---
+  const showCustomAlert = (message, type = 'info') => {
+    setCustomAlert({ visible: true, message, type });
+    Animated.spring(slideAnim, {
+      toValue: Platform.OS === 'ios' ? 60 : 40,
+      useNativeDriver: true,
+      tension: 60,
+      friction: 10
+    }).start();
+
+    setTimeout(() => {
+      Animated.timing(slideAnim, {
+        toValue: -100,
+        duration: 400,
+        useNativeDriver: true,
+      }).start(() => setCustomAlert({ visible: false, message: '', type: 'info' }));
+    }, 3500);
+  };
+
+  const getAlertIcon = () => {
+    switch(customAlert.type) {
+      case 'success': return { name: 'check', color: '#10B981', bg: 'rgba(16, 185, 129, 0.15)' };
+      case 'error': return { name: 'x', color: '#EF4444', bg: 'rgba(239, 68, 68, 0.15)' };
+      default: return { name: 'info', color: '#3B82F6', bg: 'rgba(59, 130, 246, 0.15)' };
+    }
+  };
+  const alertTheme = getAlertIcon();
 
   const handleCodeChange = (text, index) => {
     const newCode = [...code];
     newCode[index] = text;
     setCode(newCode);
-    if (text && index < 3) {
-      inputRefs[index + 1].current.focus();
-    }
+    if (text && index < 3) inputRefs[index + 1].current.focus();
   };
 
   const onJoin = async () => {
     const sessionCode = code.join('');
-    
-    // First check if it's 4 digits
     if (sessionCode.length !== 4) {
-      showCustomAlert("Please enter a 4-digit code");
+      showCustomAlert("Enter a 4-digit code", "error");
       return;
     }
-    console.log("Verifying session code:", sessionCode);
     setIsVerifying(true);
-
     try {
-      // Point to the new GET route (removing '/questions' from your API_URL)
       const verifyUrl = API_URL.replace('/questions', `/sessions/${sessionCode}`);
-      
       const response = await fetch(verifyUrl);
       const data = await response.json();
-
       if (response.ok && data.valid) {
-        // Success! The session exists.
-        showCustomAlert(`Successfully joined session ${sessionCode}!`);
+        showCustomAlert(`Joined Session ${sessionCode}`, "success");
         setIsJoined(true);
       } else {
-        // Failed! The session does not exist.
-        showCustomAlert("Invalid session code. Please try again.");
-        setCode(['', '', '', '']); // Optional: Auto-clear the wrong code
-        inputRefs[0].current.focus(); // Send cursor back to first box
+        showCustomAlert("Invalid Session Code", "error");
+        setCode(['', '', '', '']);
+        inputRefs[0].current.focus();
       }
-    } catch (error) {
-      console.error("Network request failed:", error);
-      showCustomAlert("Connection Error. Check your Wi-Fi.");
+    } catch (e) {
+      showCustomAlert("Network Error", "error");
     } finally {
       setIsVerifying(false);
     }
   };
 
-  // NEW: Handle the initial card tap
- const handleStatusPress = (selectedStatus) => {
-    if (isLocked) return; // Prevent tapping if locked
-
-    setStatus(selectedStatus);
-    
-    // Show visual confirmation
-    if (selectedStatus === 'clear') {
-      showCustomAlert("Selected: Got It");
-      // Auto-submit "Got It" since there is no text needed
-      submitQuestionToBackend('clear');
-    } else if (selectedStatus === 'sort-of') {
-      showCustomAlert("Selected: Sort Of");
-      setConfusion(''); // Reset text
-    } else if (selectedStatus === 'lost') {
-      showCustomAlert("Selected: Lost");
-      setConfusion(''); // Reset text
+  const openScanner = async () => {
+    if (!permission?.granted) {
+      const { granted } = await requestPermission();
+      if (!granted) {
+        showCustomAlert("Camera permission is required to scan", "error");
+        return;
+      }
     }
+    setIsScanning(true);
+  };
+
+  const handleBarCodeScanned = ({ data }) => {
+    setIsScanning(false); // Close the scanner immediately
+    
+    // Check if the QR code is a website URL
+    if (data.startsWith('http://') || data.startsWith('https://')) {
+      Linking.openURL(data).catch(() => {
+        showCustomAlert("Could not open the website link", "error");
+      });
+    } 
+    // Bonus: If the teacher's QR just contains the 4-digit code (e.g., "4921")
+    else if (data.length === 4 && !isNaN(data)) {
+      setCode(data.split(''));
+      showCustomAlert("Session code scanned! Press Join.", "success");
+    } else {
+      showCustomAlert("Unrecognized QR format", "error");
+    }
+  };
+
+  const handleStatusPress = (selectedStatus) => {
+    if (isLocked || status !== null) return;
+    const label = selectedStatus === 'clear' ? 'Got It' : selectedStatus === 'sort-of' ? 'Sort Of' : 'Lost';
+    
+    Alert.alert(
+      "Confirm Status",
+      `Confirm "${label}"? This will lock your choice while the teacher clarifies.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Confirm", 
+          onPress: () => {
+            setStatus(selectedStatus);
+            if (selectedStatus === 'clear') submitQuestionToBackend('clear');
+          } 
+        }
+      ]
+    );
   };
 
   const submitQuestionToBackend = async (overrideStatus = null) => {
     const currentStatus = overrideStatus || status;
-
-    // Validation for 'Lost': strictly requires text
     if (currentStatus === 'lost' && !confusion.trim()) {
-      showCustomAlert("Please describe what you are lost on.");
+      showCustomAlert("Description required for 'Lost'", "error");
       return;
     }
 
-    // Prepare text and type based on status
-    let textToSend = confusion.trim();
-    let qType = 1; // Default to 'lost'
-
-    if (currentStatus === 'clear') {
-      qType = 2; // 2 for "Got it"
-      textToSend = ""; // Send strictly empty text
-      
-    } else if (currentStatus === 'sort-of') {
-      qType = 0; // 0 for "Sort of"
-      // textToSend remains exactly what they typed (or "" if they left it blank)
-    }
-
-    const payload = {
-      sessionId: code.join(''),
-      userId: userId,
-      text: textToSend, 
-      questionType: qType,
-      computeMode: isOfflineMode ? 'tfidf' : 'openai' // Sending the toggle state!
-    };
-
     setIsSubmitting(true);
-
     try {
+      const payload = {
+        sessionId: code.join(''),
+        userId,
+        text: currentStatus === 'clear' ? "" : confusion.trim(),
+        questionType: currentStatus === 'clear' ? 2 : currentStatus === 'lost' ? 1 : 0,
+        computeMode: isOfflineMode ? 'tfidf' : 'openai'
+      };
+
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -151,33 +201,62 @@ export default function UserScreen() {
       });
 
       if (response.ok) {
-        showCustomAlert("Response successfully sent!");
-        // LOCK THE APP ON SUCCESS
+        showCustomAlert("Feedback Sent!", "success");
+        setTimeLeft(90); // Start 1:30 countdown
         setIsLocked(true);
       } else {
-        const data = await response.json();
-        showCustomAlert(data.detail || "Failed to submit.");
+        showCustomAlert("Submission Failed", "error");
       }
-    } catch (error) {
-      console.error("Network request failed:", error);
-      showCustomAlert("Connection Error. Check your Wi-Fi.");
+    } catch (e) {
+      showCustomAlert("Connection Error", "error");
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  // --- REUSABLE ALERT COMPONENT ---
+  const renderAlert = () => {
+    if (!customAlert.visible) return null;
+    return (
+      <Animated.View style={[styles.customAlertBox, { transform: [{ translateY: slideAnim }] }]}>
+        <View style={[styles.alertIconContainer, { backgroundColor: alertTheme.bg }]}>
+          <Feather name={alertTheme.name} color={alertTheme.color} size={16} />
+        </View>
+        <Text style={styles.customAlertText}>{customAlert.message}</Text>
+      </Animated.View>
+    );
+  };
+
   if (!isJoined) {
     return (
       <View style={styles.container}>
-        {/* CUSTOM ALERT COMPONENT */}
-        {customAlert.visible && (
-          <View style={styles.customAlertBox}>
-            <Feather name="info" color="white" size={20} />
-            <Text style={styles.customAlertText}>{customAlert.message}</Text>
+        {/* FULL SCREEN CAMERA MODAL */}
+        <Modal visible={isScanning} animationType="slide" transparent={false}>
+          <View style={styles.scannerContainer}>
+            <CameraView
+              style={styles.camera}
+              facing="back"
+              onBarcodeScanned={isScanning ? handleBarCodeScanned : undefined}
+              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+            >
+              <View style={styles.scannerOverlay}>
+                <TouchableOpacity 
+                  style={styles.closeScannerBtn} 
+                  onPress={() => setIsScanning(false)}
+                >
+                  <Feather name="x" size={32} color="white" />
+                </TouchableOpacity>
+                <View style={styles.scannerTarget} />
+                <Text style={styles.scannerInstructions}>
+                  Point at the Teacher's QR Code
+                </Text>
+              </View>
+            </CameraView>
           </View>
-        )}
-
+        </Modal>
+        {renderAlert()}
         <View style={styles.content}>
+          
           <View style={styles.headerSection}>
             <Text style={styles.title}>JOIN SESSION</Text>
             <Text style={styles.subtitle}>Enter the 4-digit code from your teacher</Text>
@@ -186,22 +265,23 @@ export default function UserScreen() {
           <View style={styles.codeContainer}>
             {code.map((digit, i) => (
               <View key={i} style={styles.codeBox}>
-                <TextInput
-                  ref={inputRefs[i]}
-                  style={styles.codeInput}
-                  keyboardType="number-pad"
-                  maxLength={1}
-                  value={digit}
-                  onChangeText={(text) => handleCodeChange(text, i)}
-                  placeholder="0"
+                <TextInput 
+                  ref={inputRefs[i]} 
+                  style={styles.codeInput} 
+                  keyboardType="number-pad" 
+                  maxLength={1} 
+                  value={digit} 
+                  onChangeText={(t) => handleCodeChange(t, i)} 
+                  placeholder="0" 
                   placeholderTextColor="#CBD5E1"
                 />
               </View>
             ))}
           </View>
-
+          
+          {/* Wrapped in buttonGroup for clean spacing */}
           <View style={styles.buttonGroup}>
-            <TouchableOpacity style={styles.joinButton} onPress={onJoin}>
+            <TouchableOpacity style={styles.joinButton} onPress={onJoin} disabled={isVerifying}>
               {isVerifying ? (
                 <ActivityIndicator color="white" />
               ) : (
@@ -209,144 +289,64 @@ export default function UserScreen() {
               )}
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.qrButton}>
-              <MaterialCommunityIcons name="qrcode-scan" color="#64748B" size={20} />
-              <Text style={styles.qrButtonText}>SCAN QR CODE</Text>
-            </TouchableOpacity>
+            <TouchableOpacity style={styles.qrButton} onPress={openScanner}>
+  <MaterialCommunityIcons name="qrcode-scan" color="#64748B" size={20} />
+  <Text style={styles.qrButtonText}>SCAN QR CODE</Text>
+</TouchableOpacity>
           </View>
+
         </View>
       </View>
     );
   }
 
   return (
-    <KeyboardAvoidingView 
-      behavior={Platform.OS === "ios" ? "padding" : "height"} 
-      style={styles.container}
-    >
-      {/* CUSTOM ALERT COMPONENT */}
-      {customAlert.visible && (
-        <View style={styles.customAlertBox}>
-          <Feather name="info" color="white" size={20} />
-          <Text style={styles.customAlertText}>{customAlert.message}</Text>
-        </View>
-      )}
-
+    <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.container}>
+      {renderAlert()}
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+        
+        <View style={styles.headerRow}>
           <Text style={styles.dashboardHeader}>SELECT STATUS</Text>
-          {isLocked && (
-            <View style={styles.lockedBadge}>
-              <Feather name="lock" color="#000066" size={12} />
-              <Text style={styles.lockedText}>RESPONSE LOCKED</Text>
-            </View>
-          )}
         </View>
 
-        <View style={[styles.statusGrid, isLocked && { opacity: 0.6 }]}>
-          {/* Got It Card */}
-          <TouchableOpacity 
-            onPress={() => handleStatusPress('clear')}
-            disabled={isLocked || isSubmitting}
-            style={[styles.statusCard, { backgroundColor: '#10B981', opacity: status && status !== 'clear' ? 0.3 : 1 }]} 
-          >
-            <View>
-              <Text style={styles.cardStatusLabel}>STATUS: CLEAR</Text>
-              <Text style={styles.cardMainText}>Got it</Text>
-            </View>
-            <View style={styles.iconCircle}>
-              <Feather name="check-circle" color="white" size={32} />
-            </View>
-          </TouchableOpacity>
-
-          {/* Sort Of Card */}
-          <TouchableOpacity 
-            onPress={() => handleStatusPress('sort-of')}
-            disabled={isLocked || isSubmitting}
-            style={[styles.statusCard, { backgroundColor: '#F59E0B', opacity: status && status !== 'sort-of' ? 0.3 : 1 }]} 
-          >
-            <View>
-              <Text style={styles.cardStatusLabel}>STATUS: UNSURE</Text>
-              <Text style={styles.cardMainText}>Sort of</Text>
-            </View>
-            <View style={styles.iconCircle}>
-              <MaterialCommunityIcons name="waves" color="white" size={32} />
-            </View>
-          </TouchableOpacity>
-
-          {/* Lost Card */}
-          <TouchableOpacity 
-            onPress={() => handleStatusPress('lost')}
-            disabled={isLocked || isSubmitting}
-            style={[styles.statusCard, { backgroundColor: '#EF4444', opacity: status && status !== 'lost' ? 0.3 : 1 }]} 
-          >
-            <View>
-              <Text style={styles.cardStatusLabel}>STATUS: CONFUSED</Text>
-              <Text style={styles.cardMainText}>Lost</Text>
-            </View>
-            <View style={styles.iconCircle}>
-              <Feather name="help-circle" color="white" size={32} />
-            </View>
-          </TouchableOpacity>
+        <View style={[styles.statusGrid, isLocked && { opacity: 0.4 }]}>
+          <StatusCard label="CLEAR" title="Got it" color="#10B981" icon="check-circle" active={status === 'clear'} onPress={() => handleStatusPress('clear')} disabled={isLocked || status !== null} />
+          <StatusCard label="UNSURE" title="Sort of" color="#F59E0B" icon="waves" active={status === 'sort-of'} onPress={() => handleStatusPress('sort-of')} disabled={isLocked || status !== null} isMCI />
+          <StatusCard label="CONFUSED" title="Lost" color="#EF4444" icon="help-circle" active={status === 'lost'} onPress={() => handleStatusPress('lost')} disabled={isLocked || status !== null} />
         </View>
 
-        {/* Input section: Visible for both 'lost' and 'sort-of', but hidden if locked */}
+        {/* INPUT SECTION - Hidden when locked */}
         {(status === 'lost' || status === 'sort-of') && !isLocked && (
           <View style={styles.confusionSection}>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-              <Text style={styles.confusionTitle}>
-                {status === 'lost' ? "What's confusing?" : "Any questions?"}
-              </Text>
-              <Text style={{ 
-                fontSize: 10, 
-                fontWeight: '900', 
-                color: status === 'lost' ? '#EF4444' : '#64748B',
-                letterSpacing: 1
-              }}>
-                {status === 'lost' ? "REQUIRED" : "OPTIONAL"}
-              </Text>
-            </View>
-
-            <TextInput
-              style={[
-                styles.textArea,
-                status === 'lost' && !confusion.trim() && { borderColor: '#FECACA', borderWidth: 1 } 
-              ]}
-              multiline
-              numberOfLines={4}
-              value={confusion}
-              onChangeText={setConfusion}
-              placeholder={status === 'lost' ? "Describe your confusion..." : "Anything you'd like to clarify?"}
-              textAlignVertical="top"
-              editable={!isSubmitting}
-            />
-
-            <TouchableOpacity 
-              style={[
-                styles.submitButton,
-                (status === 'lost' && !confusion.trim()) || isSubmitting ? { opacity: 0.5 } : {}
-              ]}
-              onPress={() => submitQuestionToBackend(null)}
-              disabled={isSubmitting || (status === 'lost' && !confusion.trim())}
-            >
-              {isSubmitting ? (
-                <ActivityIndicator color="white" />
-              ) : (
-                <Feather name="send" color="white" size={20} />
-              )}
-              <Text style={styles.submitButtonText}>
-                {isSubmitting ? "SENDING..." : "SUBMIT QUESTION"}
-              </Text>
+            <Text style={styles.confusionTitle}>{status === 'lost' ? "What's confusing?" : "Any questions?"}</Text>
+            <TextInput style={styles.textArea} multiline value={confusion} onChangeText={setConfusion} placeholder="Describe your confusion..." textAlignVertical="top" editable={!isSubmitting} />
+            <TouchableOpacity style={[styles.submitButton, (status === 'lost' && !confusion.trim()) && { opacity: 0.5 }]} onPress={() => submitQuestionToBackend()} disabled={isSubmitting || (status === 'lost' && !confusion.trim())}>
+              {isSubmitting ? <ActivityIndicator color="white" /> : <><Feather name="send" color="white" size={20} /><Text style={styles.submitButtonText}>SUBMIT QUESTION</Text></>}
             </TouchableOpacity>
           </View>
         )}
 
-        {/* Success Message shown when locked */}
+        {/* HIGH FIDELITY TIMER CARD - Matches Screenshot */}
         {isLocked && (
-          <View style={styles.successContainer}>
-            <Feather name="check-circle" size={40} color="#10B981" />
-            <Text style={styles.successTitle}>Response Recorded</Text>
-            <Text style={styles.successSubtitle}>Your teacher has received your feedback. Waiting for the next concept check...</Text>
+          <View style={styles.liveTimerContainer}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <MaterialCommunityIcons name="poll" size={20} color="#A5B4FC" />
+              <Text style={styles.liveTimerHeader}>Clarification in Progress</Text>
+            </View>
+            <Text style={styles.liveTimerSub}>
+              The teacher is currently reviewing responses and explaining this concept.
+            </Text>
+
+            <View style={styles.timerInnerCard}>
+              <View>
+                <Text style={styles.timerLabel}>POLL ENDS IN</Text>
+                <Text style={styles.timerValue}>{formatTime(timeLeft)}</Text>
+              </View>
+              <View style={styles.liveIndicator}>
+                <View style={styles.liveDot} />
+                <Text style={styles.liveText}>LIVE NOW</Text>
+              </View>
+            </View>
           </View>
         )}
       </ScrollView>
@@ -354,60 +354,126 @@ export default function UserScreen() {
   );
 }
 
+// --- SUB-COMPONENTS ---
+function StatusCard({ label, title, color, icon, active, onPress, disabled, isMCI }) {
+  return (
+    <TouchableOpacity onPress={onPress} disabled={disabled} style={[styles.statusCard, { backgroundColor: color, opacity: active || !disabled ? 1 : 0.2 }]}>
+      <View>
+        <Text style={styles.cardStatusLabel}>STATUS: {label}</Text>
+        <Text style={styles.cardMainText}>{title}</Text>
+      </View>
+      <View style={styles.iconCircle}>
+        {isMCI ? <MaterialCommunityIcons name={icon} color="white" size={32} /> : <Feather name={icon} color="white" size={32} />}
+      </View>
+    </TouchableOpacity>
+  );
+}
+
+// --- STYLES ---
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   
-  // NEW STYLES FOR THE CUSTOM ALERT
-  customAlertBox: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40, // Keeps it away from the notch
-    alignSelf: 'center',
-    backgroundColor: '#000066', // Dark blue theme
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderRadius: 30, // Rounded box
-    gap: 10,
-    zIndex: 999,
-    elevation: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
+  // Premium Modern Alert (Pill Style)
+  customAlertBox: { 
+    position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', 
+    paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999, 
+    elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, 
+    shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155' 
   },
-  customAlertText: { color: 'white', fontWeight: 'bold', fontSize: 14, letterSpacing: 0.5 },
+  alertIconContainer: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  customAlertText: { color: 'white', fontWeight: '600', fontSize: 14, paddingRight: 8 },
   
-  // NEW STYLES FOR LOCK STATE
-  lockedBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E2E8F0', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12, gap: 4 },
-  lockedText: { fontSize: 10, fontWeight: 'bold', color: '#000066', letterSpacing: 1 },
-  successContainer: { marginTop: 40, alignItems: 'center', backgroundColor: '#F8FAFC', padding: 30, borderRadius: 24, borderWidth: 1, borderColor: '#E2E8F0' },
-  successTitle: { fontSize: 20, fontWeight: '900', color: '#000066', marginTop: 16, marginBottom: 8 },
-  successSubtitle: { fontSize: 14, color: '#64748B', textAlign: 'center', lineHeight: 20 },
+  // High Fidelity Timer Card (Based on screenshot)
+  liveTimerContainer: {
+    backgroundColor: '#000066', // App's main dark blue
+    borderRadius: 20,
+    padding: 24,
+    marginTop: 24,
+    shadowColor: '#000066', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 15, elevation: 8
+  },
+  liveTimerHeader: { color: '#A5B4FC', fontSize: 16, fontWeight: '700' },
+  liveTimerSub: { color: '#94A3B8', fontSize: 14, lineHeight: 22, marginBottom: 24 },
+  timerInnerCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)', // Translucent glass effect
+    borderRadius: 16,
+    padding: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)'
+  },
+  timerLabel: { color: '#A5B4FC', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginBottom: 4 },
+  timerValue: { color: 'white', fontSize: 38, fontWeight: '900', letterSpacing: 2 },
+  liveIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' },
+  liveText: { color: 'white', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
 
-  // Existing Styles
+  // Standard Dashboard Elements
   scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 100 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  dashboardHeader: { fontSize: 14, fontWeight: '900', color: '#64748B', letterSpacing: 2 },
+  
+  statusGrid: { gap: 16 },
+  statusCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, borderRadius: 24, height: 115 },
+  cardStatusLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: 'bold' },
+  cardMainText: { color: 'white', fontSize: 32, fontWeight: '900' },
+  iconCircle: { backgroundColor: 'rgba(255,255,255,0.2)', padding: 12, borderRadius: 100 },
+  
+  confusionSection: { marginTop: 24, padding: 24, backgroundColor: '#F8FAFC', borderRadius: 24, borderWidth: 1, borderColor: '#E2E8F0' },
+  confusionTitle: { fontSize: 18, fontWeight: 'bold', color: '#000066', marginBottom: 12 },
+  textArea: { backgroundColor: 'white', borderRadius: 12, padding: 16, fontSize: 16, minHeight: 120, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
+  submitButton: { flexDirection: 'row', backgroundColor: '#000066', padding: 18, borderRadius: 12, justifyContent: 'center', alignItems: 'center', gap: 10 },
+  submitButtonText: { color: 'white', fontWeight: 'bold', letterSpacing: 1 },
+  
+  // JOIN SCREEN ELEMENTS
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
-  headerSection: { alignItems: 'center', marginBottom: 60 },
-  title: { fontSize: 48, fontWeight: '900', color: '#000066', letterSpacing: -2 },
-  subtitle: { fontSize: 18, color: '#64748B', textAlign: 'center', marginTop: 10, maxWidth: 250, lineHeight: 22 },
+  headerSection: { alignItems: 'center', marginBottom: 50 },
+  title: { fontSize: 40, fontWeight: '900', color: '#000066', letterSpacing: -1, marginBottom: 10, textAlign: 'center' },
+  subtitle: { fontSize: 16, color: '#64748B', textAlign: 'center', maxWidth: 250, lineHeight: 22 },
+  
   codeContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 40 },
   codeBox: { width: width * 0.18, aspectRatio: 1, backgroundColor: '#F8FAFC', borderRadius: 16, borderBottomWidth: 3, borderBottomColor: '#000066', justifyContent: 'center', alignItems: 'center' },
   codeInput: { fontSize: 32, fontWeight: '900', color: '#000066', width: '100%', textAlign: 'center' },
+  
   buttonGroup: { gap: 16 },
   joinButton: { backgroundColor: '#000066', paddingVertical: 20, borderRadius: 16, alignItems: 'center', elevation: 5 },
-  joinButtonText: { color: 'white', fontWeight: 'bold', letterSpacing: 2 },
+  joinButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16, letterSpacing: 2 },
+  
+  // QR Button Additions
   qrButton: { flexDirection: 'row', paddingVertical: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0', gap: 10 },
   qrButtonText: { color: '#64748B', fontWeight: 'bold', letterSpacing: 1.5 },
-  dashboardHeader: { fontSize: 14, fontWeight: '900', color: '#64748B', letterSpacing: 2 },
-  statusGrid: { gap: 16 },
-  statusCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, borderRadius: 24, height: 120 },
-  cardStatusLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: 'bold', letterSpacing: 1, marginBottom: 4 },
-  cardMainText: { color: 'white', fontSize: 32, fontWeight: '900' },
-  iconCircle: { backgroundColor: 'rgba(255,255,255,0.2)', padding: 12, borderRadius: 100 },
-  confusionSection: { marginTop: 32, padding: 24, backgroundColor: '#F8FAFC', borderRadius: 24, borderWidth: 1, borderColor: '#E2E8F0' },
-  confusionTitle: { fontSize: 18, fontWeight: 'bold', color: '#000066', marginBottom: 16 },
-  textArea: { backgroundColor: 'white', borderRadius: 12, padding: 16, fontSize: 16, minHeight: 120, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
-  submitButton: { flexDirection: 'row', backgroundColor: '#000066', padding: 18, borderRadius: 12, justifyContent: 'center', alignItems: 'center', gap: 10 },
-  submitButtonText: { color: 'white', fontWeight: 'bold', letterSpacing: 1 }
+
+  // --- SCANNER STYLES ---
+  scannerContainer: { flex: 1, backgroundColor: 'black' },
+  camera: { flex: 1 },
+  scannerOverlay: { 
+    flex: 1, 
+    backgroundColor: 'rgba(0,0,0,0.5)', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  closeScannerBtn: { 
+    position: 'absolute', 
+    top: Platform.OS === 'ios' ? 60 : 40, 
+    right: 24, 
+    padding: 10,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 20
+  },
+  scannerTarget: { 
+    width: 250, 
+    height: 250, 
+    borderWidth: 4, 
+    borderColor: '#10B981', 
+    backgroundColor: 'transparent',
+    borderRadius: 24,
+    marginBottom: 40
+  },
+  scannerInstructions: { 
+    color: 'white', 
+    fontSize: 16, 
+    fontWeight: 'bold', 
+    letterSpacing: 1 
+  },
 });
