@@ -3,11 +3,17 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from google.cloud import firestore as google_firestore
-from app.core.config import db, openai_client
+from app.core.config import db, openai_client # This client is now pointing to Ollama in config.py!
 
 def calculate_similarity(vec1, vec2):
     v1 = np.array(vec1)
     v2 = np.array(vec2)
+    
+    # NEW: Safety check! If the arrays are different sizes, they are 0% similar.
+    if v1.shape != v2.shape:
+        print(f"Dimension mismatch ignored: {v1.shape} vs {v2.shape}")
+        return 0.0 
+        
     return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
 def update_session_counters(session_id, question_type):
@@ -51,7 +57,7 @@ def process_question(payload):
     existing_questions = list(query.stream()) 
 
     merged = False
-    SIMILARITY_THRESHOLD = 0.70 # Good threshold for both OpenAI and TF-IDF
+    SIMILARITY_THRESHOLD = 0.70 # Good threshold for both Ollama and TF-IDF
 
     # --- OFFLINE MODE: TF-IDF ---
     if payload.computeMode == 'tfidf':
@@ -85,12 +91,12 @@ def process_question(payload):
                         break
 
 
-    # --- ONLINE MODE: OPENAI ---
+    # --- LOCAL AI MODE: OLLAMA ---
     else:
-        # Get embedding from OpenAI
+        # Get embedding from LOCAL Ollama
         response = openai_client.embeddings.create(
             input=payload.text,
-            model="text-embedding-3-small"
+            model="nomic-embed-text" # <-- Switched to the lightweight open-source model
         )
         new_embedding = response.data[0].embedding
 
@@ -105,7 +111,7 @@ def process_question(payload):
                         'count': google_firestore.Increment(1)
                     })
                     merged = True
-                    print(f"[OpenAI] Merged with existing question ID: {doc.id} (Score: {sim:.2f})")
+                    print(f"[Ollama] Merged with existing question ID: {doc.id} (Score: {sim:.2f})")
                     break
 
 
@@ -122,14 +128,17 @@ def process_question(payload):
             'userId': payload.userId
         }
         
-        # Only save the giant embedding array if we used OpenAI
-        if payload.computeMode == 'openai':
+        # Only save the giant embedding array if we used Ollama
+        if payload.computeMode != 'tfidf':
             new_question_data['embedding'] = new_embedding
 
         questions_ref.add(new_question_data)
-        print(f"Added new distinct question using {payload.computeMode.upper()}: {payload.text}")
+        
+        # Just a clean print statement for your terminal
+        display_mode = "OLLAMA" if payload.computeMode == 'openai' else payload.computeMode.upper()
+        print(f"Added new distinct question using {display_mode}: {payload.text}")
 
     return {
         "success": True, 
-        "message": f"Question {'merged' if merged else 'added'} via {payload.computeMode.upper()}"
+        "message": f"Question {'merged' if merged else 'added'} successfully."
     }

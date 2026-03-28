@@ -19,4 +19,7 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 # Initialize OpenAI
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai_client = OpenAI(
+    base_url='http://localhost:11434/v1',
+    api_key='ollama', # Random string, Ollama doesn't care
+)
