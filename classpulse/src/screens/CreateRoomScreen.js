@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
+import { doc, setDoc } from 'firebase/firestore'
+import {db} from '../services/firebase'
 
-export default function CreateRoomScreen({ navigation }) {
+export default function CreateRoomScreen({ navigation, route }) {
 
   const [subject, setSubject] = useState('');
-  const [teacher, setTeacher] = useState('');
+  const teacher = route.params?.teacherName || "Teacher";
 
   const generateCode = () => {
     return Math.floor(1000 + Math.random() * 9000).toString();
@@ -13,19 +15,22 @@ export default function CreateRoomScreen({ navigation }) {
   const handleCreate = async () => {
     const code = generateCode();
 
-    // 🔥 Replace this with Firebase later
     const sessionData = {
-      code,
-      subject,
-      teacher,
-      createdAt: Date.now()
+        sessionId: code,
+        subject,
+        teacher,
+        createdAt: Date.now()
     };
+    await setDoc(doc(db, "sessions", code), sessionData);
+    await setDoc(doc(db, "responses", code), {
+        sessionId: code,
+        gotIt: 0,
+        sortOf: 0,
+        lost: 0
+    });
 
-    console.log("Session created:", sessionData);
-
-    // 👉 Navigate to QR screen
-    navigation.navigate('SessionCreated', { sessionData });
-  };
+    navigation.navigate("SessionCreated", { sessionData });
+    };
 
   return (
     <View style={styles.container}>
@@ -39,12 +44,12 @@ export default function CreateRoomScreen({ navigation }) {
         style={styles.input}
       />
 
-      <TextInput
+      {/* <TextInput
         placeholder="Teacher Name"
         value={teacher}
-        onChangeText={setTeacher}
+        onChangeText={teacher}
         style={styles.input}
-      />
+      /> */}
 
       <TouchableOpacity style={styles.button} onPress={handleCreate}>
         <Text style={styles.btnText}>Create Room</Text>
@@ -55,7 +60,7 @@ export default function CreateRoomScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: '#F8F9FB' },
+  container: { flex: 1, padding: 20, paddingTop: 50, backgroundColor: '#F8F9FB' },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 20 },
   input: {
     backgroundColor: 'white',
