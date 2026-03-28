@@ -32,7 +32,33 @@ def update_session_counters(session_id, question_type):
         'lastActiveAt': int(time.time() * 1000)
     }, merge=True)
 
+def increment_false_count(device_id, subject):
+    print(f"🔥 increment called: {device_id}, {subject}")
 
+    # ❌ BLOCK EMPTY VALUES
+    if not device_id or device_id.strip() == "":
+        print("❌ deviceId EMPTY")
+        return
+
+    if not subject or subject.strip() == "":
+        print("❌ subject EMPTY")
+        return
+
+    doc_id = f"{device_id}_{subject}"
+    ref = db.collection("deviceSubjectStats").document(doc_id)
+
+    try:
+        ref.set({
+            "deviceId": device_id,
+            "subject": subject,
+            "falseCount": google_firestore.Increment(1),
+            "lastUpdated": int(time.time() * 1000)
+        }, merge=True)
+
+        print("✅ Firestore write SUCCESS")
+
+    except Exception as e:
+        print(f"❌ Firestore error: {e}")
 def process_question(payload):
     # 1. If there is no text (e.g., "Got It" pressed), update counters and stop.
     if not payload.text or payload.text.strip() == "":
@@ -49,7 +75,10 @@ def process_question(payload):
         return {"success": False, "message": "Session not found."}
         
     # Get the subject (default to "General Learning" if missing)
-    subject = session_doc.to_dict().get('subject', 'General Learning')
+    subject = session_doc.to_dict().get('subject')
+
+if not subject or subject.strip() == "":
+    subject = "General Learning"
 
     # 3. AI Bouncer: Ask local Llama 3.2 if the question is relevant
     prompt = f"""You are a strict teacher's assistant filtering spam. 
@@ -71,10 +100,20 @@ def process_question(payload):
         # If the AI says NO, reject the payload entirely!
         if "NO" in ai_decision and "YES" not in ai_decision:
             print(f"[AI Bouncer] Blocked off-topic question: '{payload.text}' (Subject: {subject})")
+
+            # 🔥 NEW: Increment false count for this device + subject
+            try:
+                print("AI DECISION:", ai_decision)
+                print("DEVICE ID:", payload.deviceId)
+                print("SUBJECT:", subject)
+                increment_false_count(payload.deviceId, subject)
+            except Exception as e:
+                print(f"Error updating false count: {e}")
+
             return {
                 "success": False, 
-                "message": f"Question rejected: Please keep questions related to {subject}."
-            }
+        "message": f"Question rejected: Please keep questions related to {subject}."
+    }
             
     except Exception as e:
         print(f"AI Topic validation error: {e}")
@@ -150,7 +189,7 @@ def process_question(payload):
             'text': payload.text,
             'type': payload.questionType,
             'timestamp': int(time.time() * 1000),
-            'userId': payload.userId
+            'deviceId': payload.deviceId
         }
         
         if payload.computeMode != 'tfidf':

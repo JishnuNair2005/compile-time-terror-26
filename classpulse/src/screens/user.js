@@ -1,26 +1,27 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  TextInput, 
-  TouchableOpacity, 
-  StyleSheet, 
-  ScrollView, 
-  KeyboardAvoidingView, 
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  ScrollView,
+  KeyboardAvoidingView,
   Platform,
   Dimensions,
   ActivityIndicator,
   Animated,
   Alert,
-  Modal,      
+  Modal,
   Linking
 } from 'react-native';
-import { Feather, MaterialCommunityIcons } from '@expo/vector-icons'; 
+import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
 
-const API_URL = 'http://192.168.104.109:8000/api/questions'; 
+const API_URL = 'http://192.168.104.109:8000/api/questions';
 
 export default function UserScreen() {
   const [isJoined, setIsJoined] = useState(false);
@@ -30,13 +31,28 @@ export default function UserScreen() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
-  const [isOfflineMode] = useState(false); 
-  
+  const [isOfflineMode] = useState(false);
+
   // Timer & Alert States
   const [timeLeft, setTimeLeft] = useState(0);
   const [customAlert, setCustomAlert] = useState({ visible: false, message: '', type: 'info' });
-  const [userId] = useState(() => 'user_' + Math.random().toString(36).substring(2, 11));
-  
+  const [deviceId, setDeviceId] = useState(null);
+  const hasScanned = useRef(false);
+  useEffect(() => {
+    const getDeviceId = async () => {
+      let id = await AsyncStorage.getItem("deviceId");
+
+      if (!id) {
+        id = "device_" + Math.random().toString(36).substring(2, 12);
+        await AsyncStorage.setItem("deviceId", id);
+      }
+
+      setDeviceId(id);
+    };
+
+    getDeviceId();
+  }, []);
+
   const inputRefs = [useRef(), useRef(), useRef(), useRef()];
   const timerRef = useRef(null);
   const slideAnim = useRef(new Animated.Value(-100)).current;
@@ -87,7 +103,7 @@ export default function UserScreen() {
   };
 
   const getAlertIcon = () => {
-    switch(customAlert.type) {
+    switch (customAlert.type) {
       case 'success': return { name: 'check', color: '#10B981', bg: 'rgba(16, 185, 129, 0.15)' };
       case 'error': return { name: 'x', color: '#EF4444', bg: 'rgba(239, 68, 68, 0.15)' };
       default: return { name: 'info', color: '#3B82F6', bg: 'rgba(59, 130, 246, 0.15)' };
@@ -111,7 +127,15 @@ export default function UserScreen() {
     setIsVerifying(true);
     try {
       const verifyUrl = API_URL.replace('/questions', `/sessions/${sessionCode}`);
-      const response = await fetch(verifyUrl);
+      const fetchWithTimeout = (url, options = {}, timeout = 2000) => {
+        return Promise.race([
+          fetch(url, options),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("timeout")), timeout)
+          )
+        ]);
+      };
+      const response = await fetchWithTimeout(verifyUrl);
       const data = await response.json();
       if (response.ok && data.valid) {
         showCustomAlert(`Joined Session ${sessionCode}`, "success");
@@ -127,7 +151,27 @@ export default function UserScreen() {
       setIsVerifying(false);
     }
   };
+  const verifySessionInBackground = async (customCodeArray) => {
+    const sessionCode = customCodeArray.join('');
 
+    try {
+      const verifyUrl = API_URL.replace('/questions', `/sessions/${sessionCode}`);
+      const response = await fetch(verifyUrl);
+      const data = await response.json();
+
+      if (!(response.ok && data.valid)) {
+        // ❌ If invalid → kick user out
+        setIsJoined(false);
+        setCode(['', '', '', '']);
+        showCustomAlert("Invalid Session Code", "error");
+      } else {
+        showCustomAlert(`Joined Session ${sessionCode}`, "success");
+      }
+    } catch (e) {
+      // 🌐 Network fail → optional fallback
+      showCustomAlert("Weak connection, retrying...", "error");
+    }
+  };
   const openScanner = async () => {
     if (!permission?.granted) {
       const { granted } = await requestPermission();
@@ -138,40 +182,79 @@ export default function UserScreen() {
     }
     setIsScanning(true);
   };
+  const onJoinWithCode = async (customCodeArray) => {
+    const sessionCode = customCodeArray.join('');
 
+    if (sessionCode.length !== 4) {
+      showCustomAlert("Invalid scanned code", "error");
+      return;
+    }
+
+    setIsVerifying(true);
+    try {
+      const verifyUrl = API_URL.replace('/questions', `/sessions/${sessionCode}`);
+      const response = await fetch(verifyUrl);
+      const data = await response.json();
+
+      if (response.ok && data.valid) {
+        showCustomAlert(`Joined Session ${sessionCode}`, "success");
+        setIsJoined(true);
+      } else {
+        showCustomAlert("Invalid Session Code", "error");
+        setCode(['', '', '', '']);
+      }
+    } catch (e) {
+      showCustomAlert("Network Error", "error");
+    } finally {
+      setIsVerifying(false);
+    }
+  };
   const handleBarCodeScanned = ({ data }) => {
-    setIsScanning(false); // Close the scanner immediately
-    
-    // Check if the QR code is a website URL
+    if (hasScanned.current) return; // 🚫 BLOCK duplicates
+    hasScanned.current = true;
+
+    setIsScanning(false);
+
     if (data.startsWith('http://') || data.startsWith('https://')) {
       Linking.openURL(data).catch(() => {
         showCustomAlert("Could not open the website link", "error");
       });
-    } 
-    // Bonus: If the teacher's QR just contains the 4-digit code (e.g., "4921")
+    }
     else if (data.length === 4 && !isNaN(data)) {
-      setCode(data.split(''));
-      showCustomAlert("Session code scanned! Press Join.", "success");
-    } else {
+      const scannedCode = data.split('');
+      setCode(scannedCode);
+
+      // 🚀 Instant UI
+      setIsJoined(true);
+      showCustomAlert("Joining session...", "info");
+
+      verifySessionInBackground(scannedCode);
+    }
+    else {
       showCustomAlert("Unrecognized QR format", "error");
     }
+
+    // 🔁 Reset after short delay (optional)
+    setTimeout(() => {
+      hasScanned.current = false;
+    }, 2000);
   };
 
   const handleStatusPress = (selectedStatus) => {
     if (isLocked || status !== null) return;
     const label = selectedStatus === 'clear' ? 'Got It' : selectedStatus === 'sort-of' ? 'Sort Of' : 'Lost';
-    
+
     Alert.alert(
       "Confirm Status",
       `Confirm "${label}"? This will lock your choice while the teacher clarifies.`,
       [
         { text: "Cancel", style: "cancel" },
-        { 
-          text: "Confirm", 
+        {
+          text: "Confirm",
           onPress: () => {
             setStatus(selectedStatus);
             if (selectedStatus === 'clear') submitQuestionToBackend('clear');
-          } 
+          }
         }
       ]
     );
@@ -188,13 +271,22 @@ export default function UserScreen() {
     try {
       const payload = {
         sessionId: code.join(''),
-        userId,
+        deviceId: deviceId,   // ✅ FIXED
         text: currentStatus === 'clear' ? "" : confusion.trim(),
         questionType: currentStatus === 'clear' ? 2 : currentStatus === 'lost' ? 1 : 0,
         computeMode: isOfflineMode ? 'tfidf' : 'openai'
       };
 
-      const response = await fetch(API_URL, {
+      const fetchWithTimeout = (url, options = {}, timeout = 5000) => {
+        return Promise.race([
+          fetch(url, options),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("timeout")), timeout)
+          )
+        ]);
+      };
+
+      const response = await fetchWithTimeout(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -210,7 +302,7 @@ export default function UserScreen() {
         setIsLocked(true);
       } else {
         // 3. If AI Bouncer rejected it, show its exact message!
-        showCustomAlert(data.message || "Submission Failed", "error");
+        showCustomAlert(data.message || "irrelevant question", "error");
       }
     } catch (e) {
       showCustomAlert("Connection Error", "error");
@@ -245,8 +337,8 @@ export default function UserScreen() {
               barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
             >
               <View style={styles.scannerOverlay}>
-                <TouchableOpacity 
-                  style={styles.closeScannerBtn} 
+                <TouchableOpacity
+                  style={styles.closeScannerBtn}
                   onPress={() => setIsScanning(false)}
                 >
                   <Feather name="x" size={32} color="white" />
@@ -261,7 +353,7 @@ export default function UserScreen() {
         </Modal>
         {renderAlert()}
         <View style={styles.content}>
-          
+
           <View style={styles.headerSection}>
             <Text style={styles.title}>JOIN SESSION</Text>
             <Text style={styles.subtitle}>Enter the 4-digit code from your teacher</Text>
@@ -270,20 +362,20 @@ export default function UserScreen() {
           <View style={styles.codeContainer}>
             {code.map((digit, i) => (
               <View key={i} style={styles.codeBox}>
-                <TextInput 
-                  ref={inputRefs[i]} 
-                  style={styles.codeInput} 
-                  keyboardType="number-pad" 
-                  maxLength={1} 
-                  value={digit} 
-                  onChangeText={(t) => handleCodeChange(t, i)} 
-                  placeholder="0" 
+                <TextInput
+                  ref={inputRefs[i]}
+                  style={styles.codeInput}
+                  keyboardType="number-pad"
+                  maxLength={1}
+                  value={digit}
+                  onChangeText={(t) => handleCodeChange(t, i)}
+                  placeholder="0"
                   placeholderTextColor="#CBD5E1"
                 />
               </View>
             ))}
           </View>
-          
+
           {/* Wrapped in buttonGroup for clean spacing */}
           <View style={styles.buttonGroup}>
             <TouchableOpacity style={styles.joinButton} onPress={onJoin} disabled={isVerifying}>
@@ -295,9 +387,9 @@ export default function UserScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.qrButton} onPress={openScanner}>
-  <MaterialCommunityIcons name="qrcode-scan" color="#64748B" size={20} />
-  <Text style={styles.qrButtonText}>SCAN QR CODE</Text>
-</TouchableOpacity>
+              <MaterialCommunityIcons name="qrcode-scan" color="#64748B" size={20} />
+              <Text style={styles.qrButtonText}>SCAN QR CODE</Text>
+            </TouchableOpacity>
           </View>
 
         </View>
@@ -309,7 +401,7 @@ export default function UserScreen() {
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.container}>
       {renderAlert()}
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        
+
         <View style={styles.headerRow}>
           <Text style={styles.dashboardHeader}>SELECT STATUS</Text>
         </View>
@@ -325,7 +417,7 @@ export default function UserScreen() {
           <View style={styles.confusionSection}>
             <Text style={styles.confusionTitle}>{status === 'lost' ? "What's confusing?" : "Any questions?"}</Text>
             <TextInput style={styles.textArea} multiline value={confusion} onChangeText={setConfusion} placeholder="Describe your confusion..." textAlignVertical="top" editable={!isSubmitting} />
-            <TouchableOpacity style={[styles.submitButton, (status === 'lost' && !confusion.trim()) && { opacity: 0.5 }]} onPress={() => submitQuestionToBackend()} disabled={isSubmitting || (status === 'lost' && !confusion.trim())}>
+            <TouchableOpacity style={[styles.submitButton, (status === 'lost' && !confusion.trim()) && { opacity: 0.5 }]} onPress={() => submitQuestionToBackend()} disabled={isSubmitting || (status === 'lost' && !confusion.trim()) || !deviceId}>
               {isSubmitting ? <ActivityIndicator color="white" /> : <><Feather name="send" color="white" size={20} /><Text style={styles.submitButtonText}>SUBMIT QUESTION</Text></>}
             </TouchableOpacity>
           </View>
@@ -377,17 +469,17 @@ function StatusCard({ label, title, color, icon, active, onPress, disabled, isMC
 // --- STYLES ---
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
-  
+
   // Premium Modern Alert (Pill Style)
-  customAlertBox: { 
-    position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', 
-    paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999, 
-    elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, 
-    shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155' 
+  customAlertBox: {
+    position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999,
+    elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155'
   },
   alertIconContainer: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
   customAlertText: { color: 'white', fontWeight: '600', fontSize: 14, paddingRight: 8 },
-  
+
   // High Fidelity Timer Card (Based on screenshot)
   liveTimerContainer: {
     backgroundColor: '#000066', // App's main dark blue
@@ -418,33 +510,33 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 100 },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   dashboardHeader: { fontSize: 14, fontWeight: '900', color: '#64748B', letterSpacing: 2 },
-  
+
   statusGrid: { gap: 16 },
   statusCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, borderRadius: 24, height: 115 },
   cardStatusLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: 'bold' },
   cardMainText: { color: 'white', fontSize: 32, fontWeight: '900' },
   iconCircle: { backgroundColor: 'rgba(255,255,255,0.2)', padding: 12, borderRadius: 100 },
-  
+
   confusionSection: { marginTop: 24, padding: 24, backgroundColor: '#F8FAFC', borderRadius: 24, borderWidth: 1, borderColor: '#E2E8F0' },
   confusionTitle: { fontSize: 18, fontWeight: 'bold', color: '#000066', marginBottom: 12 },
   textArea: { backgroundColor: 'white', borderRadius: 12, padding: 16, fontSize: 16, minHeight: 120, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   submitButton: { flexDirection: 'row', backgroundColor: '#000066', padding: 18, borderRadius: 12, justifyContent: 'center', alignItems: 'center', gap: 10 },
   submitButtonText: { color: 'white', fontWeight: 'bold', letterSpacing: 1 },
-  
+
   // JOIN SCREEN ELEMENTS
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
   headerSection: { alignItems: 'center', marginBottom: 50 },
   title: { fontSize: 40, fontWeight: '900', color: '#000066', letterSpacing: -1, marginBottom: 10, textAlign: 'center' },
   subtitle: { fontSize: 16, color: '#64748B', textAlign: 'center', maxWidth: 250, lineHeight: 22 },
-  
+
   codeContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 40 },
   codeBox: { width: width * 0.18, aspectRatio: 1, backgroundColor: '#F8FAFC', borderRadius: 16, borderBottomWidth: 3, borderBottomColor: '#000066', justifyContent: 'center', alignItems: 'center' },
   codeInput: { fontSize: 32, fontWeight: '900', color: '#000066', width: '100%', textAlign: 'center' },
-  
+
   buttonGroup: { gap: 16 },
   joinButton: { backgroundColor: '#000066', paddingVertical: 20, borderRadius: 16, alignItems: 'center', elevation: 5 },
   joinButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16, letterSpacing: 2 },
-  
+
   // QR Button Additions
   qrButton: { flexDirection: 'row', paddingVertical: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0', gap: 10 },
   qrButtonText: { color: '#64748B', fontWeight: 'bold', letterSpacing: 1.5 },
@@ -452,33 +544,33 @@ const styles = StyleSheet.create({
   // --- SCANNER STYLES ---
   scannerContainer: { flex: 1, backgroundColor: 'black' },
   camera: { flex: 1 },
-  scannerOverlay: { 
-    flex: 1, 
-    backgroundColor: 'rgba(0,0,0,0.5)', 
-    justifyContent: 'center', 
-    alignItems: 'center' 
+  scannerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center'
   },
-  closeScannerBtn: { 
-    position: 'absolute', 
-    top: Platform.OS === 'ios' ? 60 : 40, 
-    right: 24, 
+  closeScannerBtn: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 60 : 40,
+    right: 24,
     padding: 10,
     backgroundColor: 'rgba(0,0,0,0.5)',
     borderRadius: 20
   },
-  scannerTarget: { 
-    width: 250, 
-    height: 250, 
-    borderWidth: 4, 
-    borderColor: '#10B981', 
+  scannerTarget: {
+    width: 250,
+    height: 250,
+    borderWidth: 4,
+    borderColor: '#10B981',
     backgroundColor: 'transparent',
     borderRadius: 24,
     marginBottom: 40
   },
-  scannerInstructions: { 
-    color: 'white', 
-    fontSize: 16, 
-    fontWeight: 'bold', 
-    letterSpacing: 1 
+  scannerInstructions: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1
   },
 });
