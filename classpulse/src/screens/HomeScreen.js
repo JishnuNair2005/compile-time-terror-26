@@ -11,7 +11,7 @@ export default function HomeScreen({ navigation }) {
       {/* Teacher / Admin Button */}
       <TouchableOpacity 
         style={styles.teacherCard} 
-        onPress={() => navigation.navigate('Admin')}
+        onPress={() => navigation.navigate('Login')}
       >
         <MaterialIcons name="people-outline" size={50} color="white" />
         <Text style={styles.teacherText}>I am a Teacher</Text>

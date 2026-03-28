@@ -18,7 +18,8 @@ import {
 
 const { width } = Dimensions.get("window");
 
-export default function TeacherDashboard() {
+export default function TeacherDashboard({ route }) {
+  const { sessionId } = route.params;
   const [sessionStatus, setSessionStatus] = useState("setup"); // 'setup', 'active', 'summary'
   const [topicIndex, setTopicIndex] = useState(1);
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -32,11 +33,11 @@ export default function TeacherDashboard() {
       
       <View style={styles.qrCard}>
         <Text style={styles.labelSmall}>ACCESS CODE</Text>
-        <Text style={styles.bigCode}>4 9 2 1</Text>
+        <Text style={styles.bigCode}>{sessionId}</Text>
         
         <View style={styles.qrContainer}>
           <Image 
-            source={{ uri: "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=4921" }}
+            source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${sessionId}` }}
             style={styles.qrImage}
           />
         </View>

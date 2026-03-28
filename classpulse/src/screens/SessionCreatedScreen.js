@@ -12,11 +12,11 @@ export default function SessionCreatedScreen({ route, navigation }) {
       <Text style={styles.title}>Session Created</Text>
 
       {/* CODE */}
-      <Text style={styles.code}>{sessionData.code}</Text>
+      <Text style={styles.code}>{sessionData.sessionId}</Text>
 
       {/* QR */}
       <View style={styles.qrBox}>
-        <QRCode value={sessionData.code} size={180} />
+        <QRCode value={sessionData.sessionId} size={180} />
       </View>
 
       <Text style={styles.sub}>
@@ -26,7 +26,7 @@ export default function SessionCreatedScreen({ route, navigation }) {
       {/* START BUTTON */}
       <TouchableOpacity 
         style={styles.button}
-        onPress={() => navigation.navigate('Admin')}
+        onPress={() => navigation.navigate('Admin', { sessionId: sessionData.sessionId })}
       >
         <Text style={styles.btnText}>Start Session</Text>
       </TouchableOpacity>
