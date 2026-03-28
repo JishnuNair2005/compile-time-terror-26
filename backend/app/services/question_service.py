@@ -77,8 +77,8 @@ def process_question(payload):
     # Get the subject (default to "General Learning" if missing)
     subject = session_doc.to_dict().get('subject')
 
-if not subject or subject.strip() == "":
-    subject = "General Learning"
+    if not subject or subject.strip() == "":
+        subject = "General Learning"
 
     # 3. AI Bouncer: Ask local Llama 3.2 if the question is relevant
     prompt = f"""You are a strict teacher's assistant filtering spam. 
@@ -112,8 +112,8 @@ if not subject or subject.strip() == "":
 
             return {
                 "success": False, 
-        "message": f"Question rejected: Please keep questions related to {subject}."
-    }
+                "message": f"Question rejected: Please keep questions related to {subject}."
+            }
             
     except Exception as e:
         print(f"AI Topic validation error: {e}")
@@ -200,7 +200,7 @@ if not subject or subject.strip() == "":
         display_mode = "OLLAMA" if payload.computeMode == 'openai' else payload.computeMode.upper()
         print(f"Added new distinct question using {display_mode}: {payload.text}")
 
-    return {
-        "success": True, 
-        "message": f"Question {'merged' if merged else 'added'} successfully."
-    }
+        return {
+            "success": True, 
+            "message": f"Question {'merged' if merged else 'added'} successfully."
+        }

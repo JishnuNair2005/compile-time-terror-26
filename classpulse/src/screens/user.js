@@ -21,7 +21,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width } = Dimensions.get('window');
 
-const API_URL = 'http://192.168.104.109:8000/api/questions';
+const API_URL = 'http://10.111.71.65:8000/api/questions';
 
 export default function UserScreen() {
   const [isJoined, setIsJoined] = useState(false);
