@@ -20,7 +20,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 
 const { width } = Dimensions.get('window');
 
-const API_URL = 'http://192.168.104.128:8000/api/questions'; 
+const API_URL = 'http://192.168.104.109:8000/api/questions'; 
 
 export default function UserScreen() {
   const [isJoined, setIsJoined] = useState(false);
@@ -200,12 +200,17 @@ export default function UserScreen() {
         body: JSON.stringify(payload)
       });
 
-      if (response.ok) {
+      // 1. Parse the JSON response from Python first
+      const data = await response.json();
+
+      // 2. Check BOTH that the network didn't fail AND that Python says success=True
+      if (response.ok && data.success) {
         showCustomAlert("Feedback Sent!", "success");
         setTimeLeft(90); // Start 1:30 countdown
         setIsLocked(true);
       } else {
-        showCustomAlert("Submission Failed", "error");
+        // 3. If AI Bouncer rejected it, show its exact message!
+        showCustomAlert(data.message || "Submission Failed", "error");
       }
     } catch (e) {
       showCustomAlert("Connection Error", "error");

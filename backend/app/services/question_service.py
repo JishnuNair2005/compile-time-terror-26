@@ -3,13 +3,12 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from google.cloud import firestore as google_firestore
-from app.core.config import db, openai_client # This client is now pointing to Ollama in config.py!
+from app.core.config import db, openai_client
 
 def calculate_similarity(vec1, vec2):
     v1 = np.array(vec1)
     v2 = np.array(vec2)
     
-    # NEW: Safety check! If the arrays are different sizes, they are 0% similar.
     if v1.shape != v2.shape:
         print(f"Dimension mismatch ignored: {v1.shape} vs {v2.shape}")
         return 0.0 
@@ -17,11 +16,10 @@ def calculate_similarity(vec1, vec2):
     return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
 def update_session_counters(session_id, question_type):
-    # Map the integers to the exact field names in your database
     field_map = {
-        2: 'gotItCount',
-        0: 'sortOfCount',
-        1: 'lostCount'
+        2: 'gotIt',
+        0: 'sortOf',
+        1: 'lost'
     }
     
     field_to_increment = field_map.get(question_type)
@@ -29,9 +27,6 @@ def update_session_counters(session_id, question_type):
         return
         
     session_ref = db.collection('responses').document(session_id)
-    
-    # set(merge=True) is magic: It creates the document if it's the 
-    # first student to vote, or updates the existing one if it already exists!
     session_ref.set({
         field_to_increment: google_firestore.Increment(1),
         'lastActiveAt': int(time.time() * 1000)
@@ -39,31 +34,67 @@ def update_session_counters(session_id, question_type):
 
 
 def process_question(payload):
-    # 1. ALWAYS update the overall session counters first
-    update_session_counters(payload.sessionId, payload.questionType)
-
-    # 2. If there is no text (e.g., "Got It" pressed), stop here.
+    # 1. If there is no text (e.g., "Got It" pressed), update counters and stop.
     if not payload.text or payload.text.strip() == "":
+        update_session_counters(payload.sessionId, payload.questionType)
         return {
             "success": True, 
             "message": "Signal recorded. No question text to merge."
         }
 
-    # 3. Text exists! Fetch existing questions to check for duplicates
+    # 2. Text exists! Let's verify if it's on-topic before doing anything else.
+    session_doc = db.collection('sessions').document(payload.sessionId).get()
+    
+    if not session_doc.exists:
+        return {"success": False, "message": "Session not found."}
+        
+    # Get the subject (default to "General Learning" if missing)
+    subject = session_doc.to_dict().get('subject', 'General Learning')
+
+    # 3. AI Bouncer: Ask local Llama 3.2 if the question is relevant
+    prompt = f"""You are a strict teacher's assistant filtering spam. 
+    The current class subject is: "{subject}".
+    A student asked: "{payload.text}".
+    Is this question related to the subject or general classroom learning? 
+    Answer ONLY with the word YES or NO. Do not explain."""
+
+    try:
+        # Use the chat model for reasoning, not the embedding model
+        chat_response = openai_client.chat.completions.create(
+            model="llama3.2",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0, # Keep it strictly logical
+            max_tokens=5
+        )
+        ai_decision = chat_response.choices[0].message.content.strip().upper()
+        
+        # If the AI says NO, reject the payload entirely!
+        if "NO" in ai_decision and "YES" not in ai_decision:
+            print(f"[AI Bouncer] Blocked off-topic question: '{payload.text}' (Subject: {subject})")
+            return {
+                "success": False, 
+                "message": f"Question rejected: Please keep questions related to {subject}."
+            }
+            
+    except Exception as e:
+        print(f"AI Topic validation error: {e}")
+        # If the local AI fails for some reason, we allow the question through so class isn't blocked.
+
+    # 4. Validation Passed! Now we update the counters.
+    update_session_counters(payload.sessionId, payload.questionType)
+
+    # 5. Fetch existing questions to check for duplicates
     questions_ref = db.collection('questions')
     query = questions_ref.where('sessionId', '==', payload.sessionId).where('isActive', '==', True)
-    
-    # Convert stream to a list so we can loop through it easily
     existing_questions = list(query.stream()) 
 
     merged = False
-    SIMILARITY_THRESHOLD = 0.70 # Good threshold for both Ollama and TF-IDF
+    SIMILARITY_THRESHOLD = 0.70 
 
     # --- OFFLINE MODE: TF-IDF ---
     if payload.computeMode == 'tfidf':
         if len(existing_questions) > 0:
-            # Gather all existing question texts of the same type
-            corpus = [payload.text.lower()] # Our new text is at index 0
+            corpus = [payload.text.lower()] 
             doc_ids = []
             
             for doc in existing_questions:
@@ -72,14 +103,11 @@ def process_question(payload):
                     corpus.append(data.get('normalized', data.get('text', '')).lower())
                     doc_ids.append(doc)
 
-            # If there is at least one other question to compare to
             if len(corpus) > 1:
-                # Calculate TF-IDF matrix
                 vectorizer = TfidfVectorizer().fit_transform(corpus)
                 vectors = vectorizer.toarray()
-                new_vec = vectors[0] # The new question's vector
+                new_vec = vectors[0] 
                 
-                # Compare new question against all others
                 for i in range(1, len(vectors)):
                     sim = cosine_similarity([new_vec], [vectors[i]])[0][0]
                     if sim >= SIMILARITY_THRESHOLD:
@@ -90,19 +118,17 @@ def process_question(payload):
                         print(f"[TF-IDF] Merged with existing question ID: {doc_ids[i-1].id} (Score: {sim:.2f})")
                         break
 
-
-    # --- LOCAL AI MODE: OLLAMA ---
+    # --- LOCAL AI MODE: OLLAMA EMBEDDINGS ---
     else:
-        # Get embedding from LOCAL Ollama
+        # Get embedding from LOCAL Ollama for mathematical similarity merging
         response = openai_client.embeddings.create(
             input=payload.text,
-            model="nomic-embed-text" # <-- Switched to the lightweight open-source model
+            model="nomic-embed-text" 
         )
         new_embedding = response.data[0].embedding
 
         for doc in existing_questions:
             existing_data = doc.to_dict()
-            
             if 'embedding' in existing_data:
                 sim = calculate_similarity(new_embedding, existing_data['embedding'])
                 
@@ -114,11 +140,10 @@ def process_question(payload):
                     print(f"[Ollama] Merged with existing question ID: {doc.id} (Score: {sim:.2f})")
                     break
 
-
-    # 4. If no match was found (or if it was the first question), create it
+    # 6. If no match was found, create it
     if not merged:
         new_question_data = {
-            'count': 1, # Start at 1 person asking
+            'count': 1, 
             'isActive': True,
             'normalized': payload.text.strip().lower(),
             'sessionId': payload.sessionId,
@@ -128,13 +153,11 @@ def process_question(payload):
             'userId': payload.userId
         }
         
-        # Only save the giant embedding array if we used Ollama
         if payload.computeMode != 'tfidf':
             new_question_data['embedding'] = new_embedding
 
         questions_ref.add(new_question_data)
         
-        # Just a clean print statement for your terminal
         display_mode = "OLLAMA" if payload.computeMode == 'openai' else payload.computeMode.upper()
         print(f"Added new distinct question using {display_mode}: {payload.text}")
 
