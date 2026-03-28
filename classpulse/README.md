@@ -117,3 +117,6 @@ ClassPulse solves this by:
 ```bash
 git clone https://github.com/your-username/classpulse.git
 cd classpulse
+
+##to run backend open backend in command prompt then
+uvicorn app.main:app --reload
