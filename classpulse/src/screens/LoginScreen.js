@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
-import {collection, addDoc, query, where, getDocs } from 'firebase/firestore';
+import { collection, addDoc, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../services/firebase';
 
 export default function LoginScreen({ navigation }) {
@@ -8,37 +8,41 @@ export default function LoginScreen({ navigation }) {
   const [password, setPassword] = useState('');
 
   const handleLogin = async () => {
-    if (!email || !password) {
-        alert("Enter email and password");
-        return;
+    if (!email) {
+      alert("Enter email");
+      return;
     }
 
     try {
-        // 🔍 Check if teacher already exists
-        const q = query(collection(db, "teachers"), where("name", "==", email));
-        const snapshot = await getDocs(q);
+      // 🔍 Check if teacher exists
+      const q = query(
+        collection(db, "teachers"),
+        where("name", "==", email)
+      );
 
-        let teacherId;
+      const snapshot = await getDocs(q);
 
-        if (snapshot.empty) {
-            // ➕ Create new teacher
-            const docRef = await addDoc(collection(db, "teachers"), {
-                name: email
-            });
-            teacherId = docRef.id;
-        } else {
-        // ♻️ Existing teacher
-            teacherId = snapshot.docs[0].id;
-        }
+      if (snapshot.empty) {
+        // ❌ User not found
+        alert("User not found");
+        return;
+      }
 
-        console.log("Teacher logged in:", teacherId);
-        navigation.navigate("CreateRoom", { teacherId, teacherName: email });
+      // ✅ User exists
+      const teacherId = snapshot.docs[0].id;
+
+      console.log("Teacher logged in:", teacherId);
+
+      navigation.navigate("CreateRoom", {
+        teacherId,
+        teacherName: email
+      });
 
     } catch (err) {
-        console.error(err);
-        alert("Login failed");
+      console.error(err);
+      alert("Login failed");
     }
-    };
+  };
 
   return (
     <View style={styles.container}>
