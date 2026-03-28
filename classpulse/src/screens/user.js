@@ -23,6 +23,7 @@ export default function UserScreen() {
   const [isJoined, setIsJoined] = useState(false);
   const [code, setCode] = useState(['', '', '', '']);
   const [status, setStatus] = useState(null);
+  const [isVerifying, setIsVerifying] = useState(false);
   const [confusion, setConfusion] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   
@@ -54,11 +55,39 @@ export default function UserScreen() {
     }
   };
 
-  const onJoin = () => {
-    if (code.join('').length === 4) {
-      setIsJoined(true);
-    } else {
+  const onJoin = async () => {
+    const sessionCode = code.join('');
+    
+    // First check if it's 4 digits
+    if (sessionCode.length !== 4) {
       showCustomAlert("Please enter a 4-digit code");
+      return;
+    }
+    console.log("Verifying session code:", sessionCode);
+    setIsVerifying(true);
+
+    try {
+      // Point to the new GET route (removing '/questions' from your API_URL)
+      const verifyUrl = API_URL.replace('/questions', `/sessions/${sessionCode}`);
+      
+      const response = await fetch(verifyUrl);
+      const data = await response.json();
+
+      if (response.ok && data.valid) {
+        // Success! The session exists.
+        showCustomAlert(`Successfully joined session ${sessionCode}!`);
+        setIsJoined(true);
+      } else {
+        // Failed! The session does not exist.
+        showCustomAlert("Invalid session code. Please try again.");
+        setCode(['', '', '', '']); // Optional: Auto-clear the wrong code
+        inputRefs[0].current.focus(); // Send cursor back to first box
+      }
+    } catch (error) {
+      console.error("Network request failed:", error);
+      showCustomAlert("Connection Error. Check your Wi-Fi.");
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -173,7 +202,11 @@ export default function UserScreen() {
 
           <View style={styles.buttonGroup}>
             <TouchableOpacity style={styles.joinButton} onPress={onJoin}>
-              <Text style={styles.joinButtonText}>JOIN CLASS</Text>
+              {isVerifying ? (
+                <ActivityIndicator color="white" />
+              ) : (
+                <Text style={styles.joinButtonText}>JOIN CLASS</Text>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.qrButton}>
