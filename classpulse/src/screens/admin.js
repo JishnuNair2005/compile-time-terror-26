@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -7,18 +7,24 @@ import {
   ScrollView,
   Dimensions,
   Image,
+  ActivityIndicator   // ✅ ADD THIS
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { 
-  Feather, 
-  MaterialCommunityIcons, 
-  Ionicons, 
-  FontAwesome5 
+import {
+  Feather,
+  MaterialCommunityIcons,
+  Ionicons,
+  FontAwesome5
 } from "@expo/vector-icons";
+import { getFirestore, collection, onSnapshot } from 'firebase/firestore';
+import app from "../services/firebase" // adjust path if needed
+
+const db = getFirestore(app);
+
 
 const { width } = Dimensions.get("window");
 
-export default function TeacherDashboard({ route }) {
+export default function TeacherDashboard({ route, navigation }) {
   const { sessionId } = route.params;
   const [sessionStatus, setSessionStatus] = useState("setup"); // 'setup', 'active', 'summary'
   const [topicIndex, setTopicIndex] = useState(1);
@@ -30,13 +36,13 @@ export default function TeacherDashboard({ route }) {
   const renderSetup = () => (
     <View style={styles.centerContent}>
       <Text style={styles.setupHeader}>New Session Ready</Text>
-      
+
       <View style={styles.qrCard}>
         <Text style={styles.labelSmall}>ACCESS CODE</Text>
         <Text style={styles.bigCode}>{sessionId}</Text>
-        
+
         <View style={styles.qrContainer}>
-          <Image 
+          <Image
             source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${sessionId}` }}
             style={styles.qrImage}
           />
@@ -45,8 +51,8 @@ export default function TeacherDashboard({ route }) {
 
       <Text style={styles.setupSub}>Students scan this to join the live feed.</Text>
 
-      <TouchableOpacity 
-        style={styles.primaryBtn} 
+      <TouchableOpacity
+        style={styles.primaryBtn}
         onPress={() => setSessionStatus("active")}
       >
         <Ionicons name="play-circle" size={24} color="white" />
@@ -59,6 +65,35 @@ export default function TeacherDashboard({ route }) {
       </View>
     </View>
   );
+  const [questions, setQuestions] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Reference the specific collection
+    const questionsCol = collection(db, 'questions');
+
+    // Real-time listener
+    const unsubscribe = onSnapshot(questionsCol, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+
+      // Filter to only show questions for this specific session
+      const filtered = data.filter(q => q.sessionId === sessionId);
+
+      // Sort by votes (highest first)
+      filtered.sort((a, b) => (b.count || 0) - (a.count || 0));
+
+      setQuestions(filtered);
+      setLoading(false);
+    }, (error) => {
+      console.error("Firestore Error:", error);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [sessionId]);
 
   // 2. ACTIVE DASHBOARD (Live Monitoring)
   const renderActive = () => (
@@ -78,13 +113,13 @@ export default function TeacherDashboard({ route }) {
           <ProgressBar label="Sort of" value={25} color="#F59E0B" />
           <ProgressBar label="Lost" value={15} color="#EF4444" />
         </View>
-        
+
         <View style={styles.aiInsightBox}>
           <MaterialCommunityIcons name="chart-bubble" size={20} color="white" />
           <Text style={styles.aiInsightText}>
             Most students are following. Focus on "Variable Scoping" to clarify for the 'Sort of' group.
           </Text>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.nextTopicBtn}
             onPress={() => setTopicIndex(prev => prev + 1)}
           >
@@ -95,9 +130,23 @@ export default function TeacherDashboard({ route }) {
 
       {/* Questions Section */}
       <Text style={styles.sectionTitle}>Question Queue</Text>
-      <QuestionCard count={8} text="What is a variable?" priority="High" />
-      <QuestionCard count={3} text="Can you repeat the example?" priority="Normal" isDismiss />
 
+      {loading ? (
+        <ActivityIndicator size="large" color="#000066" style={{ marginTop: 20 }} />
+      ) : questions.length > 0 ? (
+        questions.map((item) => (
+          <QuestionCard
+            key={item.id}
+            count={item.count || 0}
+            text={item.text || "No question text provided"}
+            priority={(item.count || 0) > 5 ? "High" : "Normal"}
+          />
+        ))
+      ) : (
+        <View style={{ padding: 20, alignItems: 'center', backgroundColor: '#F8FAFC', borderRadius: 15 }}>
+          <Text style={{ color: '#94A3B8', fontStyle: 'italic' }}>No questions asked yet.</Text>
+        </View>
+      )}
       {/* Stats Row */}
       <View style={styles.miniStatsRow}>
         <MiniStat label="CLASS PACE" value="Normal" />
@@ -105,8 +154,8 @@ export default function TeacherDashboard({ route }) {
         <MiniStat label="MODE" value="Lecture" />
       </View>
 
-      <TouchableOpacity 
-        style={styles.endBtn} 
+      <TouchableOpacity
+        style={styles.endBtn}
         onPress={() => setSessionStatus("summary")}
       >
         <Text style={styles.endBtnText}>End Session</Text>
@@ -136,8 +185,8 @@ export default function TeacherDashboard({ route }) {
         </View>
       </View>
 
-      <TouchableOpacity 
-        style={styles.primaryBtn} 
+      <TouchableOpacity
+        style={styles.primaryBtn}
         onPress={() => { setSessionStatus("setup"); setTopicIndex(1); }}
       >
         <Text style={styles.primaryBtnText}>Back to Dashboard</Text>
@@ -157,14 +206,93 @@ export default function TeacherDashboard({ route }) {
         </View>
       </View>
 
-      {sessionStatus === "setup" && renderSetup()}
-      {sessionStatus === "active" && renderActive()}
-      {sessionStatus === "summary" && renderSummary()}
+
+
+      {sessionStatus === "active" && activeTab === "dashboard" && renderActive()}
+
+      {sessionStatus === "active" && activeTab === "questions" && (
+        <ScrollView style={styles.container}>
+          <Text style={styles.sectionTitle}>All Questions</Text>
+
+          {loading ? (
+            <ActivityIndicator size="large" color="#000066" />
+          ) : (
+            questions.map((item) => (
+              <QuestionCard
+                key={item.id}
+                count={item.count || 0}
+                text={item.text}
+                priority={item.count > 5 ? "High" : "Normal"}
+              />
+            ))
+          )}
+        </ScrollView>
+      )}
+
+      {sessionStatus === "active" && activeTab === "session" && (
+        <View style={styles.centerContent}>
+          <Text style={styles.mainTitle}>Session Info</Text>
+          <Text>Session ID: {sessionId}</Text>
+          <Text>Topic: {topicIndex}</Text>
+        </View>
+      )}
+
+      {/* Main Content Area */}
+      {sessionStatus === "setup" ? (
+        renderSetup()
+      ) : sessionStatus === "summary" ? (
+        renderSummary()
+      ) : (
+        // This block runs when sessionStatus is "active"
+        <>
+          {activeTab === "dashboard" && renderActive()}
+
+          {activeTab === "questions" && (
+            <ScrollView style={styles.container}>
+              <Text style={styles.sectionTitle}>All Questions</Text>
+              {loading ? (
+                <ActivityIndicator size="large" color="#000066" />
+              ) : questions.length > 0 ? (
+                questions.map((item) => (
+                  {
+                    questions.map((item) => (
+                      <QuestionCard
+                        key={item.id}
+                        count={item.count || 0}
+                        text={item.text || "No text"}
+                        type={item.type} // passing type 0 or 1
+                        priority={item.count > 5 ? "High" : "Normal"}
+                      />
+                    ))
+                  }
+                ))
+              ) : (
+                <Text style={{ textAlign: 'center', marginTop: 20, color: '#94A3B8' }}>
+                  No questions yet
+                </Text>
+              )}
+            </ScrollView>
+          )}
+
+          {activeTab === "session" && (
+            <View style={styles.centerContent}>
+              <Text style={styles.mainTitle}>Session Info</Text>
+              <Text style={{ marginTop: 10 }}>Session ID: {sessionId}</Text>
+              <Text>Topic Index: {topicIndex}</Text>
+            </View>
+          )}
+        </>
+      )}
 
       {/* Bottom Navigation */}
       <View style={styles.bottomNav}>
         <NavTab icon="layout" label="DASHBOARD" active={activeTab === "dashboard"} onPress={() => setActiveTab("dashboard")} />
-        <NavTab icon="message-square" label="QUESTIONS" active={activeTab === "questions"} onPress={() => setActiveTab("questions")} />
+        <NavTab
+          icon="message-square"
+          label="QUESTIONS"
+          active={activeTab === "questions"}
+          onPress={() => setActiveTab("questions")}
+        />
         <NavTab icon="grid" label="SESSION" active={activeTab === "session"} onPress={() => setActiveTab("session")} />
       </View>
     </SafeAreaView>
@@ -187,18 +315,29 @@ function ProgressBar({ label, value, color }) {
   );
 }
 
-function QuestionCard({ count, text, priority, isDismiss }) {
+function QuestionCard({ count, text, priority, type, isDismiss }) {
+  // Logic: Type 1 = Red, Type 0 = Yellow, Default = White
+  const cardBackground = type === 1 ? "#FEE2E2" : type === 0 ? "#FEF3C7" : "#FFFFFF";
+  const borderColor = type === 1 ? "#EF4444" : type === 0 ? "#F59E0B" : "#E2E8F0";
+
   return (
-    <View style={styles.questionCard}>
+    <View style={[
+      styles.questionCard,
+      { backgroundColor: cardBackground, borderWidth: 1, borderColor: borderColor }
+    ]}>
       <View style={[styles.countBox, isDismiss && { backgroundColor: '#E2E8F0' }]}>
         <Text style={[styles.countText, isDismiss && { color: '#64748B' }]}>{count}</Text>
       </View>
+
       <View style={{ flex: 1, paddingHorizontal: 12 }}>
-        <Text style={styles.questionText}>{text}</Text>
-        <Text style={styles.priorityText}>{priority === 'High' ? '🔥 PRIORITY HIGH' : 'CLARIFICATION'}</Text>
+        <Text style={[styles.questionText, { color: '#1E293B' }]}>{text}</Text>
+        <Text style={styles.priorityText}>
+          {type === 1 ? "⚠️ URGENT" : "❓ CLARIFICATION"}
+        </Text>
       </View>
-      <TouchableOpacity style={[styles.actionBtn, isDismiss && { backgroundColor: '#F1F5F9' }]}>
-        <Text style={[styles.actionBtnText, isDismiss && { color: '#000' }]}>{isDismiss ? 'Dismiss' : 'Answer'}</Text>
+
+      <TouchableOpacity style={styles.actionBtn}>
+        <Text style={styles.actionBtnText}>Answer</Text>
       </TouchableOpacity>
     </View>
   );
@@ -238,7 +377,7 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#FFF" },
   container: { flex: 1, padding: 20, paddingTop: 50 },
   centerContent: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20 },
-  
+
   // Header
   navHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
