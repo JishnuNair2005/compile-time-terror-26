@@ -19,14 +19,15 @@ export default function CreateRoomScreen({ navigation, route }) {
         sessionId: code,
         subject,
         teacher,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        totalJoined: 0,
     };
     await setDoc(doc(db, "sessions", code), sessionData);
     await setDoc(doc(db, "responses", code), {
         sessionId: code,
         gotIt: 0,
         sortOf: 0,
-        lost: 0
+        lost: 0,
     });
 
     navigation.navigate("Admin", { sessionId: code });
