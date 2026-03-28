@@ -29,7 +29,7 @@ export default function CreateRoomScreen({ navigation, route }) {
         lost: 0
     });
 
-    navigation.navigate("SessionCreated", { sessionData });
+    navigation.navigate("Admin", { sessionId: code });
     };
 
   return (

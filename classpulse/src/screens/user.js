@@ -20,7 +20,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 
 const { width } = Dimensions.get('window');
 
-const API_URL = 'http://10.111.71.65:8000/api/questions'; 
+const API_URL = 'http://192.168.104.128:8000/api/questions'; 
 
 export default function UserScreen() {
   const [isJoined, setIsJoined] = useState(false);
