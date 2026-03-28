@@ -235,7 +235,7 @@ function NavTab({ icon, label, active, onPress }) {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#FFF" },
-  container: { flex: 1, padding: 20 },
+  container: { flex: 1, padding: 20, paddingTop: 50 },
   centerContent: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20 },
   
   // Header
