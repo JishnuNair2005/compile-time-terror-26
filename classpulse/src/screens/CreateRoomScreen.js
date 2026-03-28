@@ -58,7 +58,6 @@ export default function CreateRoomScreen({ navigation, route }) {
     </View>
   );
 }
-
 const styles = StyleSheet.create({
   container: { flex: 1, padding: 20, paddingTop: 50, backgroundColor: '#F8F9FB' },
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 20 },
