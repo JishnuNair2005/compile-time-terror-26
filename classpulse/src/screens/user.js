@@ -166,11 +166,21 @@ useEffect(() => {
     if (text && index < 3) inputRefs[index + 1].current.focus();
   };
 
+  // --- CONSOLIDATED JOIN LOGIC (POST REQUEST) ---
   const verifyAndJoin = async (sessionCodeToVerify, isBackground = false) => {
     if (!isBackground) setIsVerifying(true);
     
     try {
+      // Pointing to the correct POST endpoint to increment totalJoined
       const joinUrl = API_URL.replace('/questions', `/sessions/${sessionCodeToVerify}/join`);
+      
+      const fetchWithTimeout = (url, options = {}, timeout = 5000) => {
+        return Promise.race([
+          fetch(url, options),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), timeout))
+        ]);
+      };
+
       const response = await fetchWithTimeout(joinUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -192,7 +202,7 @@ useEffect(() => {
         setIsJoined(true);
       } else {
         showCustomAlert("Invalid Session Code", "error");
-        if (isBackground) setIsJoined(false);
+        if (isBackground) setIsJoined(false); // kick back out if scanned code was bad
         setCode(['', '', '', '']);
         if (inputRefs[0].current) inputRefs[0].current.focus();
       }
@@ -245,13 +255,21 @@ useEffect(() => {
     setIsScanning(false);
 
     if (data.startsWith('http://') || data.startsWith('https://')) {
-      Linking.openURL(data).catch(() => showCustomAlert("Could not open link", "error"));
-    } else if (data.length === 4 && !isNaN(data)) {
-      setCode(data.split(''));
+      Linking.openURL(data).catch(() => {
+        showCustomAlert("Could not open the website link", "error");
+      });
+    }
+    else if (data.length === 4 && !isNaN(data)) {
+      const scannedCode = data.split('');
+      setCode(scannedCode);
+      
+      // Instant UI Feedback while it verifies in the background
       setIsJoined(true);
       showCustomAlert("Joining session...", "info");
+      
       verifyAndJoin(data, true);
-    } else {
+    }
+    else {
       showCustomAlert("Unrecognized QR format", "error");
     }
 
@@ -301,9 +319,17 @@ useEffect(() => {
         // 🔥 Guaranteed fallback completely prevents 422 Unprocessable Entity errors
         deviceId: deviceId || "temp_" + Math.random().toString(36).substring(2, 12),   
         text: currentStatus === 'clear' ? "" : confusion.trim(),
-        questionType: currentQType,
-        previousQuestionType: prevQType, // <--- Sending the old vote!
+        questionType: currentStatus === 'clear' ? 2 : currentStatus === 'lost' ? 1 : 0,
         computeMode: isOfflineMode ? 'tfidf' : 'openai'
+      };
+
+      const fetchWithTimeout = (url, options = {}, timeout = 5000) => {
+        return Promise.race([
+          fetch(url, options),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("timeout")), timeout)
+          )
+        ]);
       };
 
       const response = await fetch(API_URL, {
@@ -329,7 +355,7 @@ useEffect(() => {
     }
   };
 
-  // --- UI RENDERING ---
+  // --- REUSABLE ALERT COMPONENT ---
   const renderAlert = () => {
     if (!customAlert.visible) return null;
     return (
@@ -350,12 +376,12 @@ useEffect(() => {
             <CameraView style={styles.camera} facing="back" onBarcodeScanned={isScanning ? handleBarCodeScanned : undefined} barcodeScannerSettings={{ barcodeTypes: ["qr"] }}>
               <View style={styles.scannerOverlay}>
                 <TouchableOpacity style={styles.closeScannerBtn} onPress={() => setIsScanning(false)}>
-                <TouchableOpacity style={styles.closeScannerBtn} onPress={() => setIsScanning(false)}>
                   <Feather name="x" size={32} color="white" />
                 </TouchableOpacity>
-                </TouchableOpacity>
                 <View style={styles.scannerTarget} />
-                <Text style={styles.scannerInstructions}>Point at the Teacher's QR Code</Text>
+                <Text style={styles.scannerInstructions}>
+                  Point at the Teacher's QR Code
+                </Text>
               </View>
             </CameraView>
           </View>
@@ -410,7 +436,7 @@ useEffect(() => {
           <View style={styles.confusionSection}>
             <Text style={styles.confusionTitle}>{status === 'lost' ? "What's confusing?" : "Any questions?"}</Text>
             <TextInput style={styles.textArea} multiline value={confusion} onChangeText={setConfusion} placeholder="Describe your confusion..." textAlignVertical="top" editable={!isSubmitting} />
-            <TouchableOpacity style={[styles.submitButton, (status === 'lost' && !confusion.trim()) && { opacity: 0.5 }]} onPress={() => submitQuestionToBackend()} disabled={isSubmitting || (status === 'lost' && !confusion.trim())}>
+            <TouchableOpacity style={[styles.submitButton, (status === 'lost' && !confusion.trim()) && { opacity: 0.5 }]} onPress={() => submitQuestionToBackend()} disabled={isSubmitting || (status === 'lost' && !confusion.trim()) || !deviceId}>
               {isSubmitting ? <ActivityIndicator color="white" /> : <><Feather name="send" color="white" size={20} /><Text style={styles.submitButtonText}>SUBMIT QUESTION</Text></>}
             </TouchableOpacity>
           </View>
@@ -422,7 +448,9 @@ useEffect(() => {
               <MaterialCommunityIcons name="poll" size={20} color="#A5B4FC" />
               <Text style={styles.liveTimerHeader}>Clarification in Progress</Text>
             </View>
-            <Text style={styles.liveTimerSub}>The teacher is currently reviewing responses and explaining this concept.</Text>
+            <Text style={styles.liveTimerSub}>
+              The teacher is currently reviewing responses and explaining this concept.
+            </Text>
 
             <View style={styles.timerInnerCard}>
               <View><Text style={styles.timerLabel}>POLL ENDS IN</Text><Text style={styles.timerValue}>{formatTime(timeLeft)}</Text></View>
@@ -450,21 +478,71 @@ function StatusCard({ label, title, color, icon, active, onPress, disabled, isMC
 // --- STYLES (Clean & Professional) ---
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
-  customAlertBox: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999, elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155', maxWidth: '90%' },
-  alertIconContainer: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-  customAlertText: { color: 'white', fontWeight: '600', fontSize: 14, paddingRight: 8, flexShrink: 1 },
-  liveTimerContainer: { backgroundColor: '#000066', borderRadius: 20, padding: 24, marginTop: 24, shadowColor: '#000066', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 15, elevation: 8 },
+
+  customAlertBox: { 
+    position: 'absolute', 
+    alignSelf: 'center', 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingVertical: 12, 
+    paddingHorizontal: 16, 
+    borderRadius: 100, 
+    gap: 12, 
+    zIndex: 9999, 
+    elevation: 12, 
+    backgroundColor: '#1E293B', 
+    shadowColor: '#000', 
+    shadowOffset: { width: 0, height: 8 }, 
+    shadowOpacity: 0.2, 
+    shadowRadius: 12, 
+    borderWidth: 1, 
+    borderColor: '#334155',
+    maxWidth: '90%', 
+  },
+  alertIconContainer: { 
+    width: 28, 
+    height: 28, 
+    borderRadius: 14, 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  customAlertText: { 
+    color: 'white', 
+    fontWeight: '600', 
+    fontSize: 14, 
+    paddingRight: 8, 
+    flexShrink: 1, 
+  },
+
+  liveTimerContainer: {
+    backgroundColor: '#000066', 
+    borderRadius: 20,
+    padding: 24,
+    marginTop: 24,
+    shadowColor: '#000066', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 15, elevation: 8
+  },
   liveTimerHeader: { color: '#A5B4FC', fontSize: 16, fontWeight: '700' },
   liveTimerSub: { color: '#94A3B8', fontSize: 14, lineHeight: 22, marginBottom: 24 },
-  timerInnerCard: { backgroundColor: 'rgba(255, 255, 255, 0.1)', borderRadius: 16, padding: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.15)' },
+  timerInnerCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.1)', 
+    borderRadius: 16,
+    padding: 20,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)'
+  },
   timerLabel: { color: '#A5B4FC', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginBottom: 4 },
   timerValue: { color: 'white', fontSize: 38, fontWeight: '900', letterSpacing: 2 },
   liveIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' },
   liveText: { color: 'white', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
+
   scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 100 },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   dashboardHeader: { fontSize: 14, fontWeight: '900', color: '#64748B', letterSpacing: 2 },
+
   statusGrid: { gap: 16 },
   statusCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, borderRadius: 24, height: 110 },
   cardStatusLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: 'bold' },
@@ -475,22 +553,52 @@ const styles = StyleSheet.create({
   textArea: { backgroundColor: 'white', borderRadius: 12, padding: 16, fontSize: 16, minHeight: 100, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   submitButton: { flexDirection: 'row', backgroundColor: '#000066', padding: 18, borderRadius: 12, justifyContent: 'center', alignItems: 'center', gap: 10 },
   submitButtonText: { color: 'white', fontWeight: 'bold', letterSpacing: 1 },
+
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
   headerSection: { alignItems: 'center', marginBottom: 50 },
   title: { fontSize: 40, fontWeight: '900', color: '#000066', letterSpacing: -1, marginBottom: 10, textAlign: 'center' },
   subtitle: { fontSize: 16, color: '#64748B', textAlign: 'center', maxWidth: 250, lineHeight: 22 },
+
   codeContainer: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 40 },
   codeBox: { width: width * 0.18, aspectRatio: 1, backgroundColor: '#F8FAFC', borderRadius: 16, borderBottomWidth: 3, borderBottomColor: '#000066', justifyContent: 'center', alignItems: 'center' },
   codeInput: { fontSize: 32, fontWeight: '900', color: '#000066', width: '100%', textAlign: 'center' },
+
   buttonGroup: { gap: 16 },
   joinButton: { backgroundColor: '#000066', paddingVertical: 20, borderRadius: 16, alignItems: 'center', elevation: 5 },
   joinButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16, letterSpacing: 2 },
+
   qrButton: { flexDirection: 'row', paddingVertical: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0', gap: 10 },
   qrButtonText: { color: '#64748B', fontWeight: 'bold', letterSpacing: 1.5 },
+
   scannerContainer: { flex: 1, backgroundColor: 'black' },
   camera: { flex: 1 },
-  scannerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-  closeScannerBtn: { position: 'absolute', top: Platform.OS === 'ios' ? 60 : 40, right: 24, padding: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20 },
-  scannerTarget: { width: 250, height: 250, borderWidth: 4, borderColor: '#10B981', backgroundColor: 'transparent', borderRadius: 24, marginBottom: 40 },
-  scannerInstructions: { color: 'white', fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
+  scannerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  closeScannerBtn: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 60 : 40,
+    right: 24,
+    padding: 10,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 20
+  },
+  scannerTarget: {
+    width: 250,
+    height: 250,
+    borderWidth: 4,
+    borderColor: '#10B981',
+    backgroundColor: 'transparent',
+    borderRadius: 24,
+    marginBottom: 40
+  },
+  scannerInstructions: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: 'bold',
+    letterSpacing: 1
+  },
 });
