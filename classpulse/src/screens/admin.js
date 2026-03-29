@@ -28,32 +28,47 @@ import {
 const { width } = Dimensions.get("window");
 
 export default function TeacherDashboard({ route, navigation }) {
-  // Extracting all params
-  const { sessionId, subject, topic, teacherId, teacherName } = route.params;
+  const { 
+    sessionId, 
+    subject = "Subject", 
+    topic = "Topic", 
+    teacherId, 
+    teacherName 
+  } = route.params || {};
+  
   const sId = String(sessionId);
 
-  const [sessionStatus, setSessionStatus] = useState("setup");
+  // App Stages: "setup" -> "active" -> "summary"
+  const [appStage, setAppStage] = useState("setup"); 
+  
+  // UI States
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [questions, setQuestions] = useState([]);
+  const [questions, setQuestions] = useState({}); 
   const [stats, setStats] = useState({ gotIt: 0, sortOf: 0, lost: 0, total: 0, raw: { gotIt: 0, sortOf: 0, lost: 0 } });
   
   // 🔥 NEW: State for real-time student count
   const [connectedCount, setConnectedCount] = useState(0);
+  
+  const [isDbSessionActive, setIsDbSessionActive] = useState(true); 
+  const [isOfflineMode] = useState(false); 
+
+  // Summary States
+  const [finalSummary, setFinalSummary] = useState([]);
+  const [loadingSummary, setLoadingSummary] = useState(false);
 
   // --- Real-time Listeners ---
   useEffect(() => {
     if (!sId) return;
 
-    // 1. 🔥 NEW: Session Metadata Listener (Topic & Student Count)
     const unsubSession = onSnapshot(doc(db, "sessions", sId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         // totalJoined field update directly from Firestore
         setConnectedCount(data.totalJoined || 0); 
+        setIsDbSessionActive(data.isActive === true); 
       }
     });
 
-    // 2. Listen for Live Questions
     const qQuestions = query(
       collection(db, "questions"),
       where("sessionId", "==", sId),
@@ -78,7 +93,6 @@ export default function TeacherDashboard({ route, navigation }) {
       setQuestions(finalList);
     });
 
-    // 3. Listen for Real-time Signal Stats (Progress Bars)
     const unsubStats = onSnapshot(doc(db, "responses", sId), (docSnap) => {
       if (docSnap.exists()) {
         const d = docSnap.data();
@@ -100,30 +114,75 @@ export default function TeacherDashboard({ route, navigation }) {
     };
   }, [sId]);
 
+  // Automatically fetch summary when session ends
+  useEffect(() => {
+    if (!isDbSessionActive && appStage === "active") {
+      setAppStage("summary");
+      if (!isOfflineMode && finalSummary.length === 0) {
+        handleGetSummary();
+      }
+    }
+  }, [isDbSessionActive, appStage, isOfflineMode]);
+
   // --- Actions ---
   const handleEndSession = async () => {
-    setSessionStatus("summary");
+    const hasActiveQuestions = Object.values(questions).some(arr => arr.length > 0);
+    if (hasActiveQuestions) {
+      Alert.alert(
+        "Questions Pending", 
+        "Please clear all student questions (Mark as Done) before ending the session!"
+      );
+      return;
+    }
+    
+    try {
+      await updateDoc(doc(db, "sessions", sId), { 
+        isActive: false 
+      });
+    } catch (error) {
+      console.error("Error ending session:", error);
+      Alert.alert("Error", "Could not end session. Check your connection.");
+    }
   };
 
   const dismissQuestion = async (qId) => {
-    const qRef = doc(db, "questions", qId);
-    await updateDoc(qRef, { isActive: false });
+    await updateDoc(doc(db, "questions", qId), { isActive: false });
   };
 
-  // --- Screens ---
+  const handleGetSummary = async () => {
+    if (isOfflineMode) return;
+    try {
+      setLoadingSummary(true);
+      const res = await fetch("https://ankkkkk.app.n8n.cloud/webhook-test/sessionsummary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: sId })
+      });
+      const data = await res.json();
+      setFinalSummary(data.data || []); 
+    } catch (err) {
+      console.error("❌ API Error:", err);
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
+
+  // --- UI RENDERERS ---
 
   const renderSetup = () => (
-    <View style={styles.centerContent}>
+    <View style={styles.setupContainer}>
       <Text style={styles.setupHeader}>Session is Ready</Text>
       
       <View style={styles.qrCard}>
         <Text style={styles.labelSmall}>ACCESS CODE</Text>
         <Text style={styles.bigCode}>{sId}</Text>
         
+        {/* Fixed QR Container to prevent collapsing */}
         <View style={styles.qrContainer}>
           <Image 
-            source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=https://YOUR_NGROK.app/join/${sId}` }}
+            source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${sId}` }} 
             style={styles.qrImage}
+            resizeMode="contain"
           />
         </View>
 
@@ -132,135 +191,135 @@ export default function TeacherDashboard({ route, navigation }) {
           <Text style={styles.briefTopic}>{topic}</Text>
         </View>
       </View>
-
-      <TouchableOpacity style={styles.primaryBtn} onPress={() => setSessionStatus("active")}>
+      
+      <TouchableOpacity style={styles.primaryBtn} onPress={() => setAppStage("active")}>
         <Ionicons name="play-circle" size={24} color="white" />
         <Text style={styles.primaryBtnText}>Start Live Session</Text>
       </TouchableOpacity>
-
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 20 }}>
-        <View style={[styles.pulseDot, { backgroundColor: '#10B981' }]} />
-        <Text style={{ color: '#10B981', fontWeight: 'bold' }}>{connectedCount} students connected</Text>
+      
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24 }}>
+        <View style={[styles.pulseDot, { backgroundColor: isDbSessionActive ? '#10B981' : '#94A3B8' }]} />
+        <Text style={{ color: isDbSessionActive ? '#10B981' : '#94A3B8', fontWeight: 'bold', fontSize: 16 }}>
+          {connectedCount} students joined
+        </Text>
       </View>
     </View>
   );
 
-  const renderActive = () => (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }}>
-      {activeTab === "dashboard" ? (
-        <>
-          <View style={styles.headerRow}>
-            <View>
-              <Text style={styles.mainTitle}>Understanding</Text>
-              <Text style={styles.topicTag}>{topic}</Text>
+  const renderActive = () => {
+    const indicatorBg = isDbSessionActive ? '#ECFDF5' : '#F1F5F9';
+    const indicatorColor = isDbSessionActive ? '#10B981' : '#94A3B8';
+
+    return (
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }}>
+        {activeTab === "dashboard" ? (
+          <>
+            <View style={styles.headerRow}>
+              <View><Text style={styles.mainTitle}>Understanding</Text><Text style={styles.topicTag}>{topic}</Text></View>
+              <View style={[styles.activeIndicator, { backgroundColor: indicatorBg }]}>
+                <View style={[styles.pulseDot, { backgroundColor: indicatorColor }]} />
+                <Text style={[styles.liveText, { color: indicatorColor }]}>
+                  {isDbSessionActive ? `${connectedCount} ONLINE` : 'OFFLINE'}
+                </Text>
+              </View>
             </View>
-            <View style={styles.activeIndicator}>
-              <View style={styles.pulseDot} />
-              <Text style={styles.liveText}>{connectedCount} ONLINE</Text>
+            <View style={styles.statsCard}>
+              <ProgressBar label={`Got it (${stats.raw.gotIt})`} value={stats.gotIt} color="#22C55E" />
+              <ProgressBar label={`Sort of (${stats.raw.sortOf})`} value={stats.sortOf} color="#F59E0B" />
+              <ProgressBar label={`Lost (${stats.raw.lost})`} value={stats.lost} color="#EF4444" />
+              <View style={[styles.aiInsightBox, { backgroundColor: stats.lost > 30 ? "#EF4444" : "#4338CA" }]}>
+                <MaterialCommunityIcons name="chart-bubble" size={20} color="white" />
+                <Text style={styles.aiInsightText}>{stats.lost > 30 ? "High confusion detected! Recap recommended." : "Class pace looks good!"}</Text>
+              </View>
             </View>
-          </View>
-
-          <View style={styles.statsCard}>
-            <ProgressBar label={`Got it (${stats.raw?.gotIt || 0})`} value={stats.gotIt} color="#22C55E" />
-            <ProgressBar label={`Sort of (${stats.raw?.sortOf || 0})`} value={stats.sortOf} color="#F59E0B" />
-            <ProgressBar label={`Lost (${stats.raw?.lost || 0})`} value={stats.lost} color="#EF4444" />
-            
-            <View style={[styles.aiInsightBox, { backgroundColor: stats.lost > 30 ? "#EF4444" : "#4338CA" }]}>
-              <MaterialCommunityIcons name="chart-bubble" size={20} color="white" />
-              <Text style={styles.aiInsightText}>
-                {stats.lost > 30 
-                  ? "Alert: Many students are confused. Consider re-explaining the last concept." 
-                  : "Class pace looks good! Keep going."}
-              </Text>
+            <View style={styles.miniStatsRow}>
+              <MiniStat label="ACTIVE QUESTIONS" value={Object.values(questions).flat().length} />
+              <MiniStat label="SESSION ID" value={sId} />
             </View>
-          </View>
+          </>
+        ) : (
+          <>
+            <Text style={styles.sectionTitle}>Question Panel</Text>
+            {Object.keys(questions).length === 0 ? (
+              <View style={styles.emptyState}><Feather name="coffee" size={50} color="#CBD5E1" /><Text style={styles.emptyText}>No pending questions.</Text></View>
+            ) : (
+              Object.keys(questions).map((concept) => (
+                <View key={concept} style={{ marginBottom: 25 }}>
+                  <View style={styles.conceptHeader}><Text style={styles.conceptTitle}>{concept.toUpperCase()}</Text></View>
+                  {questions[concept].map((q) => (
+                    <QuestionCard key={q.id} count={q.count} text={q.text} type={q.type} onDismiss={() => dismissQuestion(q.id)} />
+                  ))}
+                  <View style={styles.horizontalLine} />
+                </View>
+              ))
+            )}
+          </>
+        )}
+        <TouchableOpacity style={styles.endBtn} onPress={handleEndSession}><Text style={styles.endBtnText}>End Session</Text></TouchableOpacity>
+      </ScrollView>
+    );
+  };
 
-          <View style={styles.miniStatsRow}>
-            <MiniStat label="ACTIVE QUESTIONS" value={questions.length} />
-            <MiniStat label="SESSION ID" value={sId} />
-          </View>
-        </>
-      ) : (
-        <>
-          <Text style={styles.sectionTitle}>Question Queue ({questions.length})</Text>
-          {questions.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Feather name="coffee" size={50} color="#CBD5E1" />
-              <Text style={styles.emptyText}>No questions yet. Students are silent!</Text>
-            </View>
-          ) : (
-            questions.map((q) => (
-              <QuestionCard 
-                key={q.id} 
-                count={q.count} 
-                text={q.text} 
-                type={q.type} 
-                onDismiss={() => dismissQuestion(q.id)}
-              />
-            ))
-          )}
-        </>
-      )}
-
-      <TouchableOpacity style={styles.endBtn} onPress={handleEndSession}>
-        <Text style={styles.endBtnText}>End Session</Text>
-      </TouchableOpacity>
-    </ScrollView>
-  );
-
-  const renderSummary = () => (
-    <View style={styles.centerContent}>
-      <MaterialCommunityIcons name="授" size={80} color="#000066" />
-      <Text style={styles.summaryTitle}>Session Complete</Text>
-      <View style={styles.summaryCard}>
-        <Text style={styles.summaryLabel}>Final Avg. Understanding</Text>
-        <Text style={styles.summaryValue}>{stats.gotIt}%</Text>
-      </View>
-      <TouchableOpacity 
-        style={styles.primaryBtn} 
-        onPress={() => navigation.navigate("CreateRoom", { teacherId: teacherName, teacherName })}
-      >
-        <Text style={styles.primaryBtnText}>Back to Dashboard</Text>
-      </TouchableOpacity>
-    </ScrollView>
-  );
-
-  const renderSummary = () => (
-    <ScrollView contentContainerStyle={styles.centerContent}>
-      <Text style={styles.summaryTitle}>Analytics Report</Text>
-      {finalSummary.map((item, index) => (
-        <View key={index} style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>{item.question || "Topic Activity"}</Text>
-          <View style={styles.summaryValues}>
-            <Text style={{color: '#EF4444'}}>Lost: {item.lost}</Text>
-            <Text style={{color: '#F59E0B'}}>Sort: {item.sortOf}</Text>
-            <Text style={{color: '#22C55E'}}>Got: {item.gotIt}</Text>
-          </View>
+  const renderSummary = () => {
+    if (loadingSummary) {
+      return (
+        <View style={styles.setupContainer}>
+          <ActivityIndicator size="large" color="#000066" />
+          <Text style={{ marginTop: 20, color: '#64748B', fontWeight: 'bold', fontSize: 16 }}>Extracting AI Summary...</Text>
         </View>
-      ))}
-      <TouchableOpacity style={styles.primaryBtn} onPress={() => navigation.navigate("CreateRoom", { teacherId, teacherName })}>
-        <Text style={styles.primaryBtnText}>Finish</Text>
-      </TouchableOpacity>
-    </ScrollView>
-  );
+      );
+    }
+
+    return (
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.scrollCenter}>
+        <Text style={styles.summaryTitle}>Analytics Report</Text>
+        
+        {isOfflineMode || finalSummary.length === 0 ? (
+          <View style={{ marginTop: 30, padding: 24, backgroundColor: '#F8FAFC', borderRadius: 16, width: '90%', borderWidth: 1, borderColor: '#E2E8F0' }}>
+            <Feather name="hard-drive" size={32} color="#94A3B8" style={{ alignSelf: 'center', marginBottom: 12 }} />
+            <Text style={{ fontSize: 16, color: '#64748B', textAlign: 'center', lineHeight: 24 }}>
+              Detailed AI summary will be extracted later. All raw data is safely stored on your local device!
+            </Text>
+          </View>
+        ) : (
+          finalSummary.map((item, index) => (
+            <View key={index} style={styles.summaryCard}>
+              <Text style={styles.summaryLabel}>{item.question || "Topic Activity"}</Text>
+              <View style={styles.summaryValues}>
+                <Text style={{color: '#EF4444'}}>Lost: {item.lost}</Text>
+                <Text style={{color: '#F59E0B'}}>Sort: {item.sortOf}</Text>
+                <Text style={{color: '#22C55E'}}>Got: {item.gotIt}</Text>
+              </View>
+            </View>
+          ))
+        )}
+
+        <TouchableOpacity style={[styles.primaryBtn, { marginTop: 30, width: '90%' }]} onPress={() => navigation.navigate("CreateRoom", { teacherId, teacherName })}>
+          <Text style={styles.primaryBtnText}>Finish</Text>
+        </TouchableOpacity>
+      </ScrollView>
+    );
+  };
+
+  const headerColor = isDbSessionActive ? "#10B981" : "#94A3B8";
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.navHeader}>
         <View style={styles.headerLeft}>
-          <Feather name="radio" size={18} color="#000066" />
-          <Text style={styles.headerSessionText}>Live: {sId}</Text>
+          <Feather name="radio" size={18} color={headerColor} />
+          <Text style={[styles.headerSessionText, { color: headerColor }]}>
+            {isDbSessionActive ? 'Active' : 'Offline'}: {sId}
+          </Text>
         </View>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Feather name="x-circle" size={24} color="#64748B" />
-        </TouchableOpacity>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Feather name="x-circle" size={24} color="#64748B" /></TouchableOpacity>
       </View>
 
-      {sessionStatus === "setup" && renderSetup()}
-      {sessionStatus === "active" && renderActive()}
-      {sessionStatus === "summary" && renderSummary()}
+      {appStage === "setup" && renderSetup()}
+      {appStage === "active" && renderActive()}
+      {appStage === "summary" && renderSummary()}
 
-      {sessionStatus === "active" && (
+      {appStage === "active" && (
         <View style={styles.bottomNav}>
           <NavTab icon="bar-chart-2" label="STATS" active={activeTab === "dashboard"} onPress={() => setActiveTab("dashboard")} />
           <NavTab icon="message-circle" label="QUESTIONS" active={activeTab === "questions"} onPress={() => setActiveTab("questions")} />
@@ -270,7 +329,7 @@ export default function TeacherDashboard({ route, navigation }) {
   );
 }
 
-// All Sub-Components and Styles preserved exactly as provided
+// --- SUB-COMPONENTS ---
 function ProgressBar({ label, value, color }) {
   return (
     <View style={{ marginBottom: 18 }}>
@@ -323,28 +382,39 @@ function NavTab({ icon, label, active, onPress }) {
   );
 }
 
+// --- STYLES ---
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: "#FFF" },
   container: { flex: 1, padding: 20 },
-  centerContent: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20 },
+  
+  // 🔥 FIXED: Separated View layout from ScrollView layout!
+  setupContainer: { flex: 1, justifyContent: "center", alignItems: "center", padding: 20 },
+  scrollCenter: { flexGrow: 1, justifyContent: "center", alignItems: "center", padding: 20 },
+  
   navHeader: { flexDirection: 'row', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerSessionText: { fontWeight: '900', fontSize: 16, color: '#000066' },
-  setupHeader: { fontSize: 26, fontWeight: '900', marginBottom: 25, color: '#1E293B' },
-  qrCard: { backgroundColor: '#F8FAFC', padding: 30, borderRadius: 30, alignItems: 'center', width: '100%', elevation: 4, marginBottom: 30 },
+  headerSessionText: { fontWeight: '900', fontSize: 16 }, 
+  
+  setupHeader: { fontSize: 28, fontWeight: '900', marginBottom: 25, color: '#1E293B' },
+  qrCard: { backgroundColor: '#F8FAFC', padding: 30, borderRadius: 30, alignItems: 'center', width: '90%', elevation: 4, marginBottom: 30, borderWidth: 1, borderColor: '#E2E8F0' },
   labelSmall: { fontSize: 12, fontWeight: '900', color: '#64748B', letterSpacing: 1, marginBottom: 8 },
-  bigCode: { fontSize: 50, fontWeight: '900', color: '#000066', letterSpacing: 8, marginVertical: 15 },
-  qrContainer: { padding: 15, backgroundColor: 'white', borderRadius: 20, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 10, elevation: 5 },
-  qrImage: { width: 180, height: 180 },
-  sessionBrief: { marginTop: 20, alignItems: 'center' },
-  briefSubject: { fontSize: 18, fontWeight: 'bold', color: '#1E293B' },
-  briefTopic: { fontSize: 14, color: '#64748B' },
+  bigCode: { fontSize: 56, fontWeight: '900', color: '#000066', letterSpacing: 10, marginVertical: 15 },
+  
+  // 🔥 FIXED: QR Container sizes forced so it never collapses
+  qrContainer: { padding: 15, backgroundColor: 'white', borderRadius: 20, elevation: 5, width: 200, height: 200, justifyContent: 'center', alignItems: 'center' },
+  qrImage: { width: 170, height: 170 },
+  
+  sessionBrief: { marginTop: 24, alignItems: 'center' },
+  briefSubject: { fontSize: 20, fontWeight: 'bold', color: '#1E293B', textAlign: 'center' },
+  briefTopic: { fontSize: 16, color: '#64748B', textAlign: 'center', marginTop: 4 },
+  
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
   mainTitle: { fontSize: 28, fontWeight: '900', color: '#1E293B' },
   topicTag: { fontSize: 14, color: '#6366F1', fontWeight: '700' },
-  activeIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FEF2F2', padding: 8, borderRadius: 12 },
-  pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' },
-  liveText: { color: '#EF4444', fontWeight: 'bold', fontSize: 11 },
+  activeIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderRadius: 12 },
+  pulseDot: { width: 8, height: 8, borderRadius: 4 },
+  liveText: { fontWeight: 'bold', fontSize: 11 },
+  
   statsCard: { backgroundColor: '#F8FAFC', borderRadius: 24, padding: 20, borderWidth: 1, borderColor: '#F1F5F9' },
   barHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   barLabel: { fontSize: 11, fontWeight: '900', color: '#64748B' },
@@ -353,6 +423,7 @@ const styles = StyleSheet.create({
   barFill: { height: 12, borderRadius: 6 },
   aiInsightBox: { flexDirection: 'row', padding: 18, borderRadius: 18, marginTop: 15, gap: 12 },
   aiInsightText: { color: 'white', fontSize: 13, flex: 1, fontWeight: '600', lineHeight: 18 },
+  
   sectionTitle: { fontSize: 22, fontWeight: '900', marginVertical: 20, color: '#1E293B' },
   questionCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', padding: 16, borderRadius: 20, marginBottom: 12, elevation: 2, borderLeftWidth: 6 },
   countBox: { width: 45, height: 45, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
@@ -362,19 +433,26 @@ const styles = StyleSheet.create({
   dismissBtn: { padding: 10, backgroundColor: '#F1F5F9', borderRadius: 12 },
   emptyState: { alignItems: 'center', marginTop: 50 },
   emptyText: { color: '#94A3B8', marginTop: 15, fontWeight: '600' },
+  
   miniStatsRow: { flexDirection: 'row', gap: 15, marginTop: 25 },
   miniStatBox: { flex: 1, backgroundColor: '#F8FAFC', padding: 16, borderRadius: 20, borderWidth: 1, borderColor: '#F1F5F9' },
   miniStatLabel: { fontSize: 10, fontWeight: '900', color: '#94A3B8' },
-  miniStatValue: { fontSize: 18, fontWeight: '900', color: '#000066', marginTop: 4 },
-  primaryBtn: { backgroundColor: '#000066', flexDirection: 'row', padding: 20, borderRadius: 20, width: '100%', justifyContent: 'center', alignItems: 'center', gap: 10 },
+  miniStatValue: { fontSize: 18, fontWeight: '900', color: '#12348aff', marginTop: 4 },
+  
+  primaryBtn: { backgroundColor: '#1d3ba8ff', flexDirection: 'row', padding: 20, borderRadius: 20, width: '90%', justifyContent: 'center', alignItems: 'center', gap: 10, elevation: 3 },
   primaryBtnText: { color: 'white', fontWeight: 'bold', fontSize: 18 },
   endBtn: { backgroundColor: '#FEF2F2', padding: 18, borderRadius: 18, marginTop: 40, alignItems: 'center', borderWidth: 1, borderColor: '#FCA5A5' },
   endBtnText: { color: '#EF4444', fontWeight: '900', fontSize: 16 },
+  
   bottomNav: { position: 'absolute', bottom: 0, width: '100%', height: 85, backgroundColor: 'white', flexDirection: 'row', justifyContent: 'space-around', borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingBottom: 20 },
   navTab: { alignItems: 'center', justifyContent: 'center' },
   navLabel: { fontSize: 11, fontWeight: 'bold', color: '#94A3B8', marginTop: 4 },
-  summaryTitle: { fontSize: 32, fontWeight: '900', marginTop: 20 },
-  summaryCard: { backgroundColor: '#F8FAFC', padding: 30, borderRadius: 24, width: '100%', marginVertical: 30, alignItems: 'center' },
-  summaryLabel: { fontSize: 14, color: '#64748B', fontWeight: 'bold' },
-  summaryValue: { fontSize: 40, fontWeight: '900', color: '#000066', marginTop: 10 }
+  
+  summaryTitle: { fontSize: 32, fontWeight: '900', marginTop: 20, color: '#071b56ff' },
+  summaryCard: { backgroundColor: '#F8FAFC', padding: 20, borderRadius: 15, width: '90%', marginVertical: 10, borderWidth: 1, borderColor: '#E2E8F0' },
+  summaryLabel: { fontSize: 16, fontWeight: 'bold', color: '#1E293B' },
+  summaryValues: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+  conceptHeader: { backgroundColor: '#E0E7FF', padding: 10, borderRadius: 10, marginBottom: 12 },
+  conceptTitle: { fontSize: 12, fontWeight: '900', color: '#244cdeff', letterSpacing: 1 },
+  horizontalLine: { height: 1, backgroundColor: '#E2E8F0', marginVertical: 15 }
 });
