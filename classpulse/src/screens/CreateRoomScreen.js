@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { 
   View, 
   Text, 
@@ -8,45 +8,64 @@ import {
   StyleSheet, 
   ActivityIndicator 
 } from "react-native";
+import { useFocusEffect } from '@react-navigation/native'; // 🔥 Added for dynamic reloading
 import { db } from "../services/firebase";
 import { 
   collection, 
-  addDoc, 
   query, 
   where, 
   getDocs, 
   serverTimestamp,
-  orderBy 
+  doc,
+  setDoc
 } from "firebase/firestore";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 
 export default function CreateRoomScreen({ route, navigation }) {
   const { teacherId, teacherName } = route.params;
   const [subject, setSubject] = useState("");
   const [topic, setTopic] = useState("");
   const [loading, setLoading] = useState(false);
-  const [history, setHistory] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
+  
+  // 🔥 NEW: State for grouped history and expanded folders
+  const [groupedHistory, setGroupedHistory] = useState({});
+  const [expandedSubjects, setExpandedSubjects] = useState({});
 
-  // 1. Fetch Teacher's Session History
-  // teacherName ke basis par query karne ke liye
+  // 1. 🔥 Dynamic Fetch: Runs every time screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      fetchHistory();
+    }, [teacherName])
+  );
+
+  // 1. Fetch & Group Teacher's Session History
   const fetchHistory = async () => {
     setRefreshing(true);
     try {
-      // 1. Agar aapke sessions collection mein 'teacher' field mein naam hai
       const q = query(
         collection(db, "sessions"),
-        where("teacher", "==", teacherName) // teacherId ki jagah naam use kiya
+        where("teacherName", "==", teacherName) // Adjusted to teacherName based on your logic
       );
 
       const snap = await getDocs(q);
       const sessions = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
-      // Manual Sort (In case Index nahi banayi):
-      sessions.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds);
+      // Sort newest first
+      sessions.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
       
-      setHistory(sessions);
+      // 🔥 GROUP SESSIONS BY SUBJECT
+      const grouped = {};
+      sessions.forEach(session => {
+        const subjName = session.subject || "Uncategorized";
+        if (!grouped[subjName]) {
+          grouped[subjName] = [];
+        }
+        grouped[subjName].push(session);
+      });
+
+      setGroupedHistory(grouped);
     } catch (err) {
       console.error("History Fetch Error:", err);
     } finally {
@@ -56,7 +75,15 @@ export default function CreateRoomScreen({ route, navigation }) {
 
   useEffect(() => {
     fetchHistory();
-  }, [teacherId]);
+  }, [teacherName]);
+
+  // 🔥 Toggle Folder Open/Close
+  const toggleSubject = (subjectName) => {
+    setExpandedSubjects(prev => ({
+      ...prev,
+      [subjectName]: !prev[subjectName] // Toggle boolean value
+    }));
+  };
 
   // 2. Create New Session Logic
   const handleCreateSession = async () => {
@@ -81,7 +108,6 @@ export default function CreateRoomScreen({ route, navigation }) {
       };
 
       // Add to 'sessions' collection
-      const { doc, setDoc } = require("firebase/firestore"); // Import if needed
       await setDoc(doc(collection(db, "sessions"), generatedId), sessionData);
       await setDoc(doc(db, "responses", generatedId), {
         gotIt: 0,
@@ -90,13 +116,16 @@ export default function CreateRoomScreen({ route, navigation }) {
         sessionId: generatedId
       });
 
-  console.log("✅ Session & Responses created!");
-      // 🔥 Initializing 'responses' doc for real-time counters
-      // Use setDoc if you want a specific ID, but here sessionId is unique
+      console.log("✅ Session & Responses created!");
+      
+      // Reset inputs
+      setSubject("");
+      setTopic("");
+      
       navigation.navigate("Admin", { 
         sessionId: generatedId, 
-        subject: subject, 
-        topic: topic,
+        subject: subject.trim(), 
+        topic: topic.trim(),
         teacherId: teacherName,
         teacherName: teacherName
       });
@@ -111,11 +140,13 @@ export default function CreateRoomScreen({ route, navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header Section */}
       <View style={styles.header}>
         <Text style={styles.welcomeText}>Hello, Prof. {teacherName}</Text>
         <Text style={styles.subText}>Ready for a new lecture?</Text>
       </View>
 
+      {/* Create Room Card */}
       <View style={styles.createCard}>
         <Text style={styles.cardTitle}>Create New Room</Text>
         
@@ -153,6 +184,7 @@ export default function CreateRoomScreen({ route, navigation }) {
         </TouchableOpacity>
       </View>
 
+      {/* History Header */}
       <View style={styles.historyHeader}>
         <Text style={styles.historyTitle}>Your Previous Sessions</Text>
         <TouchableOpacity onPress={fetchHistory}>
@@ -160,29 +192,68 @@ export default function CreateRoomScreen({ route, navigation }) {
         </TouchableOpacity>
       </View>
 
+      {/* 🔥 GROUPED FOLDER LIST */}
       <FlatList
-        data={history}
-        keyExtractor={(item) => item.id}
+        data={Object.entries(groupedHistory)} // Converts object to array of [subjectName, sessionsArray]
+        keyExtractor={(item) => item[0]}
         refreshing={refreshing}
         onRefresh={fetchHistory}
-        renderItem={({ item }) => (
-          <TouchableOpacity 
-            style={styles.sessionItem}
-            onPress={() => navigation.navigate("Admin", { 
-              sessionId: item.sessionId, 
-              subject: item.subject, 
-              topic: item.topic 
-            })}
-          >
-            <View style={styles.sessionInfo}>
-              <Text style={styles.sessionSubject}>{item.subject}</Text>
-              <Text style={styles.sessionTopic}>{item.topic}</Text>
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: 20 }}
+        renderItem={({ item }) => {
+          const subjectName = item[0];
+          const sessionsList = item[1];
+          const isExpanded = expandedSubjects[subjectName];
+
+          return (
+            <View style={styles.folderContainer}>
+              {/* Folder Header */}
+              <TouchableOpacity 
+                style={[styles.folderHeader, isExpanded && styles.folderHeaderActive]} 
+                onPress={() => toggleSubject(subjectName)}
+              >
+                <View style={styles.folderLeft}>
+                  <Feather name={isExpanded ? "folder-minus" : "folder"} size={20} color={isExpanded ? "#000066" : "#64748B"} />
+                  <Text style={[styles.folderTitle, isExpanded && styles.folderTitleActive]}>
+                    {subjectName} <Text style={styles.folderCount}>({sessionsList.length})</Text>
+                  </Text>
+                </View>
+                <Feather name={isExpanded ? "chevron-down" : "chevron-right"} size={20} color="#64748B" />
+              </TouchableOpacity>
+
+              {/* Expanded Sessions List */}
+              {isExpanded && (
+                <View style={styles.expandedContent}>
+                  {sessionsList.map((session) => (
+                    <TouchableOpacity 
+                      key={session.id}
+                      style={styles.sessionItem}
+                      onPress={() => navigation.navigate("Admin", { 
+                        sessionId: session.sessionId, 
+                        subject: session.subject, 
+                        topic: session.topic,
+                        teacherId: teacherName,
+                        teacherName: teacherName
+                      })}
+                    >
+                      <View style={styles.sessionInfo}>
+                        <Text style={styles.sessionTopic} numberOfLines={1}>
+                          {session.topic}
+                        </Text>
+                        <Text style={styles.sessionDate}>
+                          {session.createdAt ? new Date(session.createdAt.seconds * 1000).toLocaleDateString() : 'Just now'}
+                        </Text>
+                      </View>
+                      <View style={styles.sessionBadge}>
+                        <Text style={styles.sessionCode}>{session.sessionId}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
             </View>
-            <View style={styles.sessionBadge}>
-              <Text style={styles.sessionCode}>{item.sessionId}</Text>
-            </View>
-          </TouchableOpacity>
-        )}
+          );
+        }}
         ListEmptyComponent={
           <Text style={styles.emptyText}>No sessions found. Create your first one above!</Text>
         }
@@ -209,12 +280,23 @@ const styles = StyleSheet.create({
 
   historyHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 },
   historyTitle: { fontSize: 18, fontWeight: "bold", color: "#1E293B" },
+  emptyText: { textAlign: "center", color: "#94A3B8", marginTop: 20 },
+
+  // 🔥 FOLDER STYLES
+  folderContainer: { marginBottom: 12 },
+  folderHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0" },
+  folderHeaderActive: { borderColor: "#000066", backgroundColor: "#F1F5F9" },
+  folderLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  folderTitle: { fontSize: 16, fontWeight: "bold", color: "#334155" },
+  folderTitleActive: { color: "#000066" },
+  folderCount: { fontSize: 14, color: "#94A3B8", fontWeight: "normal" },
   
-  sessionItem: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", padding: 15, borderRadius: 15, marginBottom: 10, borderWidth: 1, borderColor: "#E2E8F0" },
-  sessionInfo: { flex: 1 },
-  sessionSubject: { fontSize: 14, fontWeight: "bold", color: "#1E293B" },
-  sessionTopic: { fontSize: 12, color: "#64748B", marginTop: 2 },
-  sessionBadge: { backgroundColor: "#E0E7FF", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-  sessionCode: { color: "#0b275bff", fontWeight: "bold", fontSize: 14 },
-  emptyText: { textAlign: "center", color: "#94A3B8", marginTop: 20 }
+  // Session Items Inside Folders
+  expandedContent: { marginTop: 8, gap: 8, paddingLeft: 12 },
+  sessionItem: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0", borderLeftWidth: 4, borderLeftColor: "#2569d8ff" },
+  sessionInfo: { flex: 1, paddingRight: 10 },
+  sessionTopic: { fontSize: 15, fontWeight: "bold", color: "#1E293B" },
+  sessionDate: { fontSize: 12, color: "#64748B", marginTop: 4 },
+  sessionBadge: { backgroundColor: "#E0E7FF", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  sessionCode: { color: "#0b275bff", fontWeight: "bold", fontSize: 14, letterSpacing: 1 }
 });
