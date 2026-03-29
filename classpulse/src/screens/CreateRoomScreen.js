@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useCallback } from "react";
 import { 
   View, 
   Text, 
@@ -6,17 +6,19 @@ import {
   TouchableOpacity, 
   FlatList, 
   StyleSheet, 
-  ActivityIndicator 
+  ActivityIndicator,
+  Alert
 } from "react-native";
+import { useFocusEffect } from '@react-navigation/native'; // 🔥 Added for dynamic reloading
 import { db } from "../services/firebase";
 import { 
   collection, 
-  addDoc, 
   query, 
   where, 
   getDocs, 
   serverTimestamp,
-  orderBy 
+  doc,
+  setDoc
 } from "firebase/firestore";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Feather, MaterialCommunityIcons } from "@expo/vector-icons";
@@ -29,22 +31,31 @@ export default function CreateRoomScreen({ route, navigation }) {
   const [history, setHistory] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
 
-  // 1. Fetch Teacher's Session History
-  // teacherName ke basis par query karne ke liye
+  // 1. 🔥 Dynamic Fetch: Runs every time screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      fetchHistory();
+    }, [teacherName])
+  );
+
   const fetchHistory = async () => {
     setRefreshing(true);
     try {
-      // 1. Agar aapke sessions collection mein 'teacher' field mein naam hai
+      // Query sessions where teacherName matches
       const q = query(
         collection(db, "sessions"),
-        where("teacher", "==", teacherName) // teacherId ki jagah naam use kiya
+        where("teacherName", "==", teacherName)
       );
 
       const snap = await getDocs(q);
       const sessions = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
-      // Manual Sort (In case Index nahi banayi):
-      sessions.sort((a, b) => b.createdAt?.seconds - a.createdAt?.seconds);
+      // 🔥 Manual Sort in JS to avoid Firebase Index requirements for immediate testing
+      sessions.sort((a, b) => {
+        const timeA = a.createdAt?.seconds || 0;
+        const timeB = b.createdAt?.seconds || 0;
+        return timeB - timeA;
+      });
       
       setHistory(sessions);
     } catch (err) {
@@ -54,14 +65,10 @@ export default function CreateRoomScreen({ route, navigation }) {
     }
   };
 
-  useEffect(() => {
-    fetchHistory();
-  }, [teacherId]);
-
   // 2. Create New Session Logic
   const handleCreateSession = async () => {
     if (!subject.trim() || !topic.trim()) {
-      alert("Please enter both Subject and Topic");
+      Alert.alert("Error", "Please enter both Subject and Topic");
       return;
     }
 
@@ -80,9 +87,10 @@ export default function CreateRoomScreen({ route, navigation }) {
         totalJoined: 0
       };
 
-      // Add to 'sessions' collection
-      const { doc, setDoc } = require("firebase/firestore"); // Import if needed
-      await setDoc(doc(collection(db, "sessions"), generatedId), sessionData);
+      // 🔥 Using setDoc with specific Document ID for reliability
+      await setDoc(doc(db, "sessions", generatedId), sessionData);
+      
+      // Initialize 'responses' doc for real-time counters
       await setDoc(doc(db, "responses", generatedId), {
         gotIt: 0,
         sortOf: 0,
@@ -90,20 +98,19 @@ export default function CreateRoomScreen({ route, navigation }) {
         sessionId: generatedId
       });
 
-  console.log("✅ Session & Responses created!");
-      // 🔥 Initializing 'responses' doc for real-time counters
-      // Use setDoc if you want a specific ID, but here sessionId is unique
+      console.log("✅ Session Created!");
+      
       navigation.navigate("Admin", { 
         sessionId: generatedId, 
-        subject: subject, 
-        topic: topic,
+        subject: subject.trim(), 
+        topic: topic.trim(),
         teacherId: teacherName,
-        teacherName: teacherName
+        teacherName: teacherName 
       });
 
     } catch (err) {
       console.error("Create Session Error:", err);
-      alert("Failed to create session");
+      Alert.alert("Error", "Failed to create session");
     } finally {
       setLoading(false);
     }
@@ -126,6 +133,7 @@ export default function CreateRoomScreen({ route, navigation }) {
             value={subject}
             onChangeText={setSubject}
             style={styles.input}
+            placeholderTextColor="#94A3B8"
           />
         </View>
 
@@ -136,6 +144,7 @@ export default function CreateRoomScreen({ route, navigation }) {
             value={topic}
             onChangeText={setTopic}
             style={styles.input}
+            placeholderTextColor="#94A3B8"
           />
         </View>
 
@@ -171,7 +180,9 @@ export default function CreateRoomScreen({ route, navigation }) {
             onPress={() => navigation.navigate("Admin", { 
               sessionId: item.sessionId, 
               subject: item.subject, 
-              topic: item.topic 
+              topic: item.topic,
+              teacherId: teacherName,
+              teacherName: teacherName
             })}
           >
             <View style={styles.sessionInfo}>
@@ -196,20 +207,15 @@ const styles = StyleSheet.create({
   header: { marginBottom: 30 },
   welcomeText: { fontSize: 24, fontWeight: "900", color: "#000066" },
   subText: { fontSize: 14, color: "#64748B", marginTop: 4 },
-  
   createCard: { backgroundColor: "white", padding: 20, borderRadius: 20, elevation: 4, marginBottom: 30 },
   cardTitle: { fontSize: 16, fontWeight: "bold", marginBottom: 20, color: "#1E293B" },
-  
   inputGroup: { flexDirection: "row", alignItems: "center", backgroundColor: "#F1F5F9", borderRadius: 12, paddingHorizontal: 15, marginBottom: 15 },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, height: 50, fontSize: 14, color: "#1E293B" },
-  
   createBtn: { backgroundColor: "#2569d8ff", height: 55, borderRadius: 12, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 10 },
   createBtnText: { color: "white", fontWeight: "900", letterSpacing: 1 },
-
   historyHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 },
   historyTitle: { fontSize: 18, fontWeight: "bold", color: "#1E293B" },
-  
   sessionItem: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", padding: 15, borderRadius: 15, marginBottom: 10, borderWidth: 1, borderColor: "#E2E8F0" },
   sessionInfo: { flex: 1 },
   sessionSubject: { fontSize: 14, fontWeight: "bold", color: "#1E293B" },
