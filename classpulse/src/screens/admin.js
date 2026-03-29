@@ -10,19 +10,19 @@ import {
   Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { 
-  collection, 
-  onSnapshot, 
-  query, 
-  where, 
-  doc, 
-  updateDoc 
+import {
+  collection,
+  onSnapshot,
+  query,
+  where,
+  doc,
+  updateDoc
 } from "firebase/firestore";
 import { db } from "../services/firebase";
-import { 
-  Feather, 
-  MaterialCommunityIcons, 
-  Ionicons 
+import {
+  Feather,
+  MaterialCommunityIcons,
+  Ionicons
 } from "@expo/vector-icons";
 
 const { width } = Dimensions.get("window");
@@ -32,7 +32,7 @@ export default function TeacherDashboard({ route, navigation }) {
   const { sessionId, subject, topic, teacherId, teacherName } = route.params;
   const sId = String(sessionId);
 
-  const [sessionStatus, setSessionStatus] = useState("setup"); 
+  const [sessionStatus, setSessionStatus] = useState("setup");
   const [activeTab, setActiveTab] = useState("dashboard");
   const [questions, setQuestions] = useState([]);
   const [stats, setStats] = useState({ gotIt: 0, sortOf: 0, lost: 0, total: 0, raw: { gotIt: 0, sortOf: 0, lost: 0 } });
@@ -222,7 +222,26 @@ export default function TeacherDashboard({ route, navigation }) {
       >
         <Text style={styles.primaryBtnText}>Back to Dashboard</Text>
       </TouchableOpacity>
-    </View>
+    </ScrollView>
+  );
+
+  const renderSummary = () => (
+    <ScrollView contentContainerStyle={styles.centerContent}>
+      <Text style={styles.summaryTitle}>Analytics Report</Text>
+      {finalSummary.map((item, index) => (
+        <View key={index} style={styles.summaryCard}>
+          <Text style={styles.summaryLabel}>{item.question || "Topic Activity"}</Text>
+          <View style={styles.summaryValues}>
+            <Text style={{color: '#EF4444'}}>Lost: {item.lost}</Text>
+            <Text style={{color: '#F59E0B'}}>Sort: {item.sortOf}</Text>
+            <Text style={{color: '#22C55E'}}>Got: {item.gotIt}</Text>
+          </View>
+        </View>
+      ))}
+      <TouchableOpacity style={styles.primaryBtn} onPress={() => navigation.navigate("CreateRoom", { teacherId, teacherName })}>
+        <Text style={styles.primaryBtnText}>Finish</Text>
+      </TouchableOpacity>
+    </ScrollView>
   );
 
   return (
