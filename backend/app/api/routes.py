@@ -6,6 +6,36 @@ from app.core.config import db
 
 router = APIRouter()
 
+from pydantic import BaseModel
+
+# Create a tiny model for the decrement payload
+class DecrementPayload(BaseModel):
+    questionType: int
+
+# --- NEW ROUTE: Subtract from counter when timer ends ---
+@router.post("/sessions/{session_id}/decrement")
+def decrement_status(session_id: str, payload: DecrementPayload):
+    try:
+        field_map = { 2: 'gotIt', 0: 'sortOf', 1: 'lost' }
+        field_to_decrement = field_map.get(payload.questionType)
+
+        if not field_to_decrement:
+            return {"valid": False, "message": "Invalid question type"}
+
+        session_ref = db.collection('responses').document(session_id)
+        
+        # Safely subtract 1 from whichever button they originally pressed
+        session_ref.update({
+            field_to_decrement: google_firestore.Increment(-1)
+        })
+        
+        return {"valid": True, "message": "Counter decremented"}
+        
+    except Exception as e:
+        print(f"Error decrementing session: {e}")
+        # We don't want to crash the frontend if this fails, just fail silently
+        return {"valid": False, "message": "Failed to decrement"}
+
 # --- ROUTE: Join Session & Increment Counter ---
 @router.post("/sessions/{session_id}/join")
 def join_session(session_id: str):
