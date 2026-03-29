@@ -38,63 +38,81 @@ def decrement_status(session_id: str, payload: DecrementPayload):
 
 # --- ROUTE: Join Session & Increment Counter ---
 @router.post("/sessions/{session_id}/join")
-def join_session(session_id: str):
+def join_session(session_id: str, payload: dict):
+    # 🔥 CRITICAL FIX: Frontend se deviceId uthayega
+    device_id = payload.get("deviceId")
+    if not device_id:
+        raise HTTPException(status_code=400, detail="Device ID missing in payload")
+
     try:
-        # Look for the exact document ID in the 'sessions' collection
         session_ref = db.collection('sessions').document(session_id)
-        doc = session_ref.get()
         
-        if doc.exists:
-            # Increment the total joined count by 1 safely
-            session_ref.update({
-                'totalJoined': google_firestore.Increment(1)
-            })
-            return {"valid": True, "message": "Successfully joined session"}
-        else:
-            return {"valid": False, "message": "Session not found"}
+        # Unique ID for this specific student in this specific session
+        participant_id = f"{session_id}_{device_id}" 
+        p_ref = db.collection('session_participants').document(participant_id)
+        
+        participant_doc = p_ref.get()
+        
+        if participant_doc.exists:
+            # ✅ RE-JOINING: DO NOT INCREMENT
+            session_data = session_ref.get().to_dict()
+            return {
+                "valid": True, 
+                "message": "Welcome back!", 
+                "alreadyJoined": True,
+                "subject": session_data.get("subject", "General")
+            }
+
+        session_doc = session_ref.get()
+        if session_doc.exists:
+            # ✅ NEW ENTRY: INCREMENT COUNTER
+            session_ref.update({'totalJoined': google_firestore.Increment(1)})
             
+            p_ref.set({
+                'deviceId': device_id,
+                'sessionId': session_id,
+                'joinedAt': google_firestore.SERVER_TIMESTAMP
+            })
+            
+            return {
+                "valid": True, 
+                "message": "First time join",
+                "alreadyJoined": False,
+                "subject": session_doc.to_dict().get("subject", "General")
+            }
+            
+        return {"valid": False, "message": "Session not found"}
     except Exception as e:
-        print(f"Error joining session: {e}")
-        raise HTTPException(status_code=500, detail="Failed to join session")
+        raise HTTPException(status_code=500, detail=str(e))
 
-
-# --- ROUTE: Submit Question ---
+# --- ROUTE: Submit Question (Llama Bouncer & Tagging) ---
 @router.post("/questions")
 def submit_question(payload: QuestionPayload):
+    """
+    Processes questions with AI filtering and device tracking.
+    """
     try:
-        # Hand off the logic to the service layer
+        # Hand off the logic to service layer for spam score & concept tagging
         result = process_question(payload)
         return result
     except Exception as e:
-        print(f"Error processing question: {e}")
+        print(f"❌ Question Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to process question")
 
-        # --- ROUTE: Get Student Count ---
-# @router.get("/sessions/{session_id}/count")
-# def get_session_count(session_id: str):
-#     try:
-#         session_ref = db.collection('sessions').document(session_id)
-#         doc = session_ref.get()
-        
-#         if doc.exists:
-#             data = doc.to_dict()
-#             # Return the totalJoined count, default to 0 if it doesn't exist yet
-#             return {"count": data.get("totalJoined", 0)}
-#         else:
-#             return {"count": 0, "message": "Session not found"}
-            
-#     except Exception as e:
-#         print(f"Error fetching session count: {e}")
-#         raise HTTPException(status_code=500, detail="Failed to fetch count")
+
+# --- ROUTE: Get Student Count (Polling Support) ---
 @router.get("/sessions/{session_id}/count")
 def get_session_count(session_id: str):
+    """
+    Returns the real-time attendee count for the admin dashboard.
+    """
     try:
         session_ref = db.collection('sessions').document(session_id)
         doc = session_ref.get()
         if doc.exists:
             data = doc.to_dict()
-            # totalJoined field se data uthayega
             return {"count": data.get("totalJoined", 0)}
         return {"count": 0, "message": "Session not found"}
     except Exception as e:
+        print(f"❌ Count Fetch Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch count")

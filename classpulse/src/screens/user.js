@@ -18,6 +18,8 @@ import {
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, onSnapshot } from 'firebase/firestore'; // 🔥 Added for real-time bouncer
+import { db } from '../services/firebase';
 
 const { width } = Dimensions.get('window');
 const API_URL = 'http://192.168.104.109:8000/api/questions';
@@ -48,6 +50,7 @@ export default function UserScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [isOfflineMode] = useState(false);
+  const [currentSubject, setCurrentSubject] = useState("General"); // 🔥 Added for spam tracking
 
   const [timeLeft, setTimeLeft] = useState(0);
   const [customAlert, setCustomAlert] = useState({ visible: false, message: '', type: 'info' });
@@ -176,6 +179,13 @@ useEffect(() => {
       const data = await response.json();
 
       if (response.ok && data.valid) {
+        // Save for persistence
+        await AsyncStorage.setItem("activeSessionCode", sessionCodeToVerify);
+        if (data.subject) {
+          setCurrentSubject(data.subject);
+          await AsyncStorage.setItem("activeSubject", data.subject);
+        }
+
         showCustomAlert(`Joined Session ${sessionCodeToVerify}`, "success");
         setIsJoined(true);
       } else {
@@ -185,7 +195,7 @@ useEffect(() => {
         if (inputRefs[0].current) inputRefs[0].current.focus();
       }
     } catch (e) {
-      showCustomAlert("Network Error. Check Connection.", "error");
+      showCustomAlert("Network Error", "error");
       if (isBackground) setIsJoined(false);
     } finally {
       if (!isBackground) setIsVerifying(false);
@@ -201,11 +211,26 @@ useEffect(() => {
     verifyAndJoin(sessionCode, false);
   };
 
+  const leaveSession = async () => {
+    Alert.alert("Leave Session", "Are you sure you want to exit?", [
+      { text: "Cancel", style: "cancel" },
+      { 
+        text: "Leave", 
+        onPress: async () => {
+          await AsyncStorage.removeItem("activeSessionCode");
+          await AsyncStorage.removeItem("activeSubject");
+          setIsJoined(false);
+          setCode(['', '', '', '']);
+        } 
+      }
+    ]);
+  };
+
   const openScanner = async () => {
     if (!permission?.granted) {
       const { granted } = await requestPermission();
       if (!granted) {
-        showCustomAlert("Camera permission is required to scan", "error");
+        showCustomAlert("Camera permission required", "error");
         return;
       }
     }
@@ -228,6 +253,7 @@ useEffect(() => {
       showCustomAlert("Unrecognized QR format", "error");
     }
 
+    setTimeout(() => { hasScanned.current = false; }, 2000);
     setTimeout(() => { hasScanned.current = false; }, 2000);
   };
 
@@ -279,7 +305,7 @@ useEffect(() => {
         computeMode: isOfflineMode ? 'tfidf' : 'openai'
       };
 
-      const response = await fetchWithTimeout(API_URL, {
+      const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -293,7 +319,7 @@ useEffect(() => {
         setTimeLeft(90); 
         setIsLocked(true);
       } else {
-        showCustomAlert(data.message || "Question Rejected", "error");
+        showCustomAlert(data.message || "Rejected", "error");
       }
     } catch (e) {
       showCustomAlert("Connection Error", "error");
@@ -323,7 +349,9 @@ useEffect(() => {
             <CameraView style={styles.camera} facing="back" onBarcodeScanned={isScanning ? handleBarCodeScanned : undefined} barcodeScannerSettings={{ barcodeTypes: ["qr"] }}>
               <View style={styles.scannerOverlay}>
                 <TouchableOpacity style={styles.closeScannerBtn} onPress={() => setIsScanning(false)}>
+                <TouchableOpacity style={styles.closeScannerBtn} onPress={() => setIsScanning(false)}>
                   <Feather name="x" size={32} color="white" />
+                </TouchableOpacity>
                 </TouchableOpacity>
                 <View style={styles.scannerTarget} />
                 <Text style={styles.scannerInstructions}>Point at the Teacher's QR Code</Text>
@@ -331,40 +359,27 @@ useEffect(() => {
             </CameraView>
           </View>
         </Modal>
-        
         {renderAlert()}
-        
         <View style={styles.content}>
           <View style={styles.headerSection}>
             <Text style={styles.title}>JOIN SESSION</Text>
-            <Text style={styles.subtitle}>Enter the 4-digit code from your teacher</Text>
+            <Text style={styles.subtitle}>Enter code to start feedback</Text>
           </View>
-
           <View style={styles.codeContainer}>
             {code.map((digit, i) => (
               <View key={i} style={styles.codeBox}>
-                <TextInput
-                  ref={inputRefs[i]}
-                  style={styles.codeInput}
-                  keyboardType="number-pad"
-                  maxLength={1}
-                  value={digit}
-                  onChangeText={(t) => handleCodeChange(t, i)}
-                  placeholder="0"
-                  placeholderTextColor="#CBD5E1"
-                />
+                <TextInput ref={inputRefs[i]} style={styles.codeInput} keyboardType="number-pad" maxLength={1} value={digit} onChangeText={(t) => handleCodeChange(t, i)} placeholder="0" placeholderTextColor="#CBD5E1" />
               </View>
             ))}
           </View>
-
           <View style={styles.buttonGroup}>
             <TouchableOpacity style={styles.joinButton} onPress={onJoin} disabled={isVerifying}>
               {isVerifying ? <ActivityIndicator color="white" /> : <Text style={styles.joinButtonText}>JOIN CLASS</Text>}
+              {isVerifying ? <ActivityIndicator color="white" /> : <Text style={styles.joinButtonText}>JOIN CLASS</Text>}
             </TouchableOpacity>
-
             <TouchableOpacity style={styles.qrButton} onPress={openScanner}>
               <MaterialCommunityIcons name="qrcode-scan" color="#64748B" size={20} />
-              <Text style={styles.qrButtonText}>SCAN QR CODE</Text>
+              <Text style={styles.qrButtonText}>SCAN QR</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -375,12 +390,16 @@ useEffect(() => {
   return (
     <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.container}>
       {renderAlert()}
+      <View style={styles.topNav}>
+        <TouchableOpacity onPress={leaveSession} style={styles.leaveIcon}>
+          <Feather name="log-out" size={22} color="#64748B" />
+        </TouchableOpacity>
+        <Text style={styles.navSessionText}>Session: {code.join('')}</Text>
+        <View style={{width: 40}} />
+      </View>
+
       <ScrollView contentContainerStyle={styles.scrollContent}>
-
-        <View style={styles.headerRow}>
-          <Text style={styles.dashboardHeader}>SELECT STATUS</Text>
-        </View>
-
+        <View style={styles.headerRow}><Text style={styles.dashboardHeader}>SELECT STATUS</Text></View>
         <View style={[styles.statusGrid, isLocked && { opacity: 0.4 }]}>
           <StatusCard label="CLEAR" title="Got it" color="#10B981" icon="check-circle" active={status === 'clear'} onPress={() => handleStatusPress('clear')} disabled={isLocked || status !== null} />
           <StatusCard label="UNSURE" title="Sort of" color="#F59E0B" icon="waves" active={status === 'sort-of'} onPress={() => handleStatusPress('sort-of')} disabled={isLocked || status !== null} isMCI />
@@ -406,14 +425,8 @@ useEffect(() => {
             <Text style={styles.liveTimerSub}>The teacher is currently reviewing responses and explaining this concept.</Text>
 
             <View style={styles.timerInnerCard}>
-              <View>
-                <Text style={styles.timerLabel}>POLL ENDS IN</Text>
-                <Text style={styles.timerValue}>{formatTime(timeLeft)}</Text>
-              </View>
-              <View style={styles.liveIndicator}>
-                <View style={styles.liveDot} />
-                <Text style={styles.liveText}>LIVE NOW</Text>
-              </View>
+              <View><Text style={styles.timerLabel}>POLL ENDS IN</Text><Text style={styles.timerValue}>{formatTime(timeLeft)}</Text></View>
+              <View style={styles.liveIndicator}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View>
             </View>
           </View>
         )}
@@ -426,10 +439,7 @@ useEffect(() => {
 function StatusCard({ label, title, color, icon, active, onPress, disabled, isMCI }) {
   return (
     <TouchableOpacity onPress={onPress} disabled={disabled} style={[styles.statusCard, { backgroundColor: color, opacity: active || !disabled ? 1 : 0.2 }]}>
-      <View>
-        <Text style={styles.cardStatusLabel}>STATUS: {label}</Text>
-        <Text style={styles.cardMainText}>{title}</Text>
-      </View>
+      <View><Text style={styles.cardStatusLabel}>{label}</Text><Text style={styles.cardMainText}>{title}</Text></View>
       <View style={styles.iconCircle}>
         {isMCI ? <MaterialCommunityIcons name={icon} color="white" size={32} /> : <Feather name={icon} color="white" size={32} />}
       </View>
@@ -437,7 +447,7 @@ function StatusCard({ label, title, color, icon, active, onPress, disabled, isMC
   );
 }
 
-// --- STYLES ---
+// --- STYLES (Clean & Professional) ---
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   customAlertBox: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999, elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155', maxWidth: '90%' },
@@ -456,13 +466,13 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   dashboardHeader: { fontSize: 14, fontWeight: '900', color: '#64748B', letterSpacing: 2 },
   statusGrid: { gap: 16 },
-  statusCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, borderRadius: 24, height: 115 },
-  cardStatusLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 12, fontWeight: 'bold' },
-  cardMainText: { color: 'white', fontSize: 32, fontWeight: '900' },
+  statusCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, borderRadius: 24, height: 110 },
+  cardStatusLabel: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: 'bold' },
+  cardMainText: { color: 'white', fontSize: 28, fontWeight: '900' },
   iconCircle: { backgroundColor: 'rgba(255,255,255,0.2)', padding: 12, borderRadius: 100 },
   confusionSection: { marginTop: 24, padding: 24, backgroundColor: '#F8FAFC', borderRadius: 24, borderWidth: 1, borderColor: '#E2E8F0' },
   confusionTitle: { fontSize: 18, fontWeight: 'bold', color: '#000066', marginBottom: 12 },
-  textArea: { backgroundColor: 'white', borderRadius: 12, padding: 16, fontSize: 16, minHeight: 120, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
+  textArea: { backgroundColor: 'white', borderRadius: 12, padding: 16, fontSize: 16, minHeight: 100, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 16 },
   submitButton: { flexDirection: 'row', backgroundColor: '#000066', padding: 18, borderRadius: 12, justifyContent: 'center', alignItems: 'center', gap: 10 },
   submitButtonText: { color: 'white', fontWeight: 'bold', letterSpacing: 1 },
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: 24 },
