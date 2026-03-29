@@ -10,19 +10,19 @@ import {
   Animated,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { 
-  collection, 
-  onSnapshot, 
-  query, 
-  where, 
-  doc, 
-  updateDoc 
+import {
+  collection,
+  onSnapshot,
+  query,
+  where,
+  doc,
+  updateDoc
 } from "firebase/firestore";
 import { db } from "../services/firebase";
-import { 
-  Feather, 
-  MaterialCommunityIcons, 
-  Ionicons 
+import {
+  Feather,
+  MaterialCommunityIcons,
+  Ionicons
 } from "@expo/vector-icons";
 
 const { width } = Dimensions.get("window");
@@ -31,11 +31,13 @@ export default function TeacherDashboard({ route, navigation }) {
   const { sessionId, subject, topic, teacherId, teacherName } = route.params;
   const sId = String(sessionId);
 
-  const [sessionStatus, setSessionStatus] = useState("setup"); 
+  const [sessionStatus, setSessionStatus] = useState("setup");
   const [activeTab, setActiveTab] = useState("dashboard");
   const [questions, setQuestions] = useState([]);
   const [stats, setStats] = useState({ gotIt: 0, sortOf: 0, lost: 0, total: 0, raw: { gotIt: 0, sortOf: 0, lost: 0 } });
   const [connectedCount, setConnectedCount] = useState(0);
+  const [finalSummary, setFinalSummary] = useState([]);
+  const [loadingSummary, setLoadingSummary] = useState(false);
 
   // --- Real-time Listeners ---
   useEffect(() => {
@@ -46,7 +48,7 @@ export default function TeacherDashboard({ route, navigation }) {
       if (docSnap.exists()) {
         const data = docSnap.data();
         // totalJoined field se real-time count update hoga
-        setConnectedCount(data.totalJoined || 0); 
+        setConnectedCount(data.totalJoined || 0);
         console.log("📡 Live Session Update - Count:", data.totalJoined);
       }
     });
@@ -108,7 +110,7 @@ export default function TeacherDashboard({ route, navigation }) {
         const response = await fetch(`http://10.111.71.65:8000/api/sessions/${sId}/count`);
         if (response.ok) {
           const data = await response.json();
-          setConnectedCount(data.count || 0); 
+          setConnectedCount(data.count || 0);
         }
       } catch (error) {
         console.log("Polling count...");
@@ -116,32 +118,82 @@ export default function TeacherDashboard({ route, navigation }) {
     };
 
     fetchStudentCount();
-    const intervalId = setInterval(fetchStudentCount, 5000); 
+    const intervalId = setInterval(fetchStudentCount, 5000);
     return () => clearInterval(intervalId);
   }, [sId, sessionStatus]);
 
   // --- Actions ---
   const handleEndSession = async () => {
-    setSessionStatus("summary");
+    setSessionStatus("ended"); // NEW STATE
   };
 
   const dismissQuestion = async (qId) => {
     const qRef = doc(db, "questions", qId);
     await updateDoc(qRef, { isActive: false });
   };
+  const handleGetSummary = async () => {
+    try {
+      setLoadingSummary(true);
+
+      const res = await fetch("https://ankkkkk.app.n8n.cloud/webhook-test/sessionsummary", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sessionId: sId   // VERY IMPORTANT
+        })
+      });
+
+      const data = await res.json();
+
+      console.log("✅ Summary:", data);
+
+      setFinalSummary(data.data || []); // store result
+      setSessionStatus("summary");
+
+    } catch (err) {
+      console.error("❌ API Error:", err);
+    } finally {
+      setLoadingSummary(false);
+    }
+  };
+  const renderEnded = () => (
+    <View style={styles.centerContent}>
+      <Text style={styles.summaryTitle}>Session Ended</Text>
+
+      {/* Show Summary Button */}
+      <TouchableOpacity style={styles.primaryBtn} onPress={handleGetSummary}>
+        <Text style={styles.primaryBtnText}>Show Summary</Text>
+      </TouchableOpacity>
+
+      {/* Loader */}
+      {loadingSummary && <Text style={{ marginTop: 10 }}>Loading...</Text>}
+
+      {/* Quit Button */}
+      <TouchableOpacity
+        style={[styles.endBtn, { marginTop: 20 }]}
+        onPress={() =>
+          navigation.navigate("CreateRoom", { teacherId, teacherName })
+        }
+      >
+        <Text style={styles.endBtnText}>Quit</Text>
+      </TouchableOpacity>
+    </View>
+  );
 
   // --- Screens ---
 
   const renderSetup = () => (
     <View style={styles.centerContent}>
       <Text style={styles.setupHeader}>Session is Ready</Text>
-      
+
       <View style={styles.qrCard}>
         <Text style={styles.labelSmall}>ACCESS CODE</Text>
         <Text style={styles.bigCode}>{sId}</Text>
-        
+
         <View style={styles.qrContainer}>
-          <Image 
+          <Image
             source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=https://YOUR_NGROK.app/join/${sId}` }}
             style={styles.qrImage}
           />
@@ -184,12 +236,12 @@ export default function TeacherDashboard({ route, navigation }) {
             <ProgressBar label={`Got it (${stats.raw.gotIt})`} value={stats.gotIt} color="#22C55E" />
             <ProgressBar label={`Sort of (${stats.raw.sortOf})`} value={stats.sortOf} color="#F59E0B" />
             <ProgressBar label={`Lost (${stats.raw.lost})`} value={stats.lost} color="#EF4444" />
-            
+
             <View style={[styles.aiInsightBox, { backgroundColor: stats.lost > 30 ? "#EF4444" : "#4338CA" }]}>
               <MaterialCommunityIcons name="chart-bubble" size={20} color="white" />
               <Text style={styles.aiInsightText}>
-                {stats.lost > 30 
-                  ? "Alert: Many students are confused. Consider re-explaining the last concept." 
+                {stats.lost > 30
+                  ? "Alert: Many students are confused. Consider re-explaining the last concept."
                   : "Class pace looks good! Keep going."}
               </Text>
             </View>
@@ -210,11 +262,11 @@ export default function TeacherDashboard({ route, navigation }) {
             </View>
           ) : (
             questions.map((q) => (
-              <QuestionCard 
-                key={q.id} 
-                count={q.count} 
-                text={q.text} 
-                type={q.type} 
+              <QuestionCard
+                key={q.id}
+                count={q.count}
+                text={q.text}
+                type={q.type}
                 onDismiss={() => dismissQuestion(q.id)}
               />
             ))
@@ -227,21 +279,64 @@ export default function TeacherDashboard({ route, navigation }) {
       </TouchableOpacity>
     </ScrollView>
   );
-
   const renderSummary = () => (
-    <View style={styles.centerContent}>
-      <MaterialCommunityIcons name="授" size={80} color="#000066" />
-      <Text style={styles.summaryTitle}>Session Complete</Text>
-      <View style={styles.summaryCard}>
-        <Text style={styles.summaryLabel}>Final Avg. Understanding</Text>
-        <Text style={styles.summaryValue}>{stats.gotIt}%</Text>
-      </View>
-      <TouchableOpacity style={styles.primaryBtn} onPress={() => navigation.navigate("CreateRoom", {teacherId: teacherName, teacherName})}>
+    <ScrollView style={{ flex: 1, padding: 20 }}>
+      <Text style={styles.summaryTitle}>📊 Session Summary</Text>
+
+      {(finalSummary || []).length === 0 ? (
+        <Text style={{ textAlign: "center", marginTop: 40 }}>
+          No summary data available
+        </Text>
+      ) : (
+        finalSummary.map((item, index) => {
+          const total = item.lost + item.sortOf + item.gotIt || 1;
+
+          const lostPct = Math.round((item.lost / total) * 100);
+          const sortPct = Math.round((item.sortOf / total) * 100);
+          const gotPct = Math.round((item.gotIt / total) * 100);
+
+          return (
+            <View key={index} style={styles.summaryCard}>
+              <Text style={styles.questionTitle}>{item.question}</Text>
+
+              {/* Got It */}
+              <View style={styles.barRow}>
+                <Text style={styles.label}>✅ Got It ({item.gotIt})</Text>
+                <View style={styles.barBg}>
+                  <View style={[styles.barFill, { width: `${gotPct}%`, backgroundColor: "#22C55E" }]} />
+                </View>
+              </View>
+
+              {/* Sort Of */}
+              <View style={styles.barRow}>
+                <Text style={styles.label}>🤔 Sort Of ({item.sortOf})</Text>
+                <View style={styles.barBg}>
+                  <View style={[styles.barFill, { width: `${sortPct}%`, backgroundColor: "#F59E0B" }]} />
+                </View>
+              </View>
+
+              {/* Lost */}
+              <View style={styles.barRow}>
+                <Text style={styles.label}>😕 Lost ({item.lost})</Text>
+                <View style={styles.barBg}>
+                  <View style={[styles.barFill, { width: `${lostPct}%`, backgroundColor: "#EF4444" }]} />
+                </View>
+              </View>
+            </View>
+          );
+        })
+      )}
+
+      <TouchableOpacity
+        style={styles.primaryBtn}
+        onPress={() =>
+          navigation.navigate("CreateRoom", { teacherId, teacherName })
+        }
+      >
         <Text style={styles.primaryBtnText}>Back to Dashboard</Text>
       </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.navHeader}>
@@ -256,6 +351,7 @@ export default function TeacherDashboard({ route, navigation }) {
 
       {sessionStatus === "setup" && renderSetup()}
       {sessionStatus === "active" && renderActive()}
+      {sessionStatus === "ended" && renderEnded()}
       {sessionStatus === "summary" && renderSummary()}
 
       {sessionStatus === "active" && (
