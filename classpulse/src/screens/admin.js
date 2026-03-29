@@ -10,8 +10,6 @@ import {
   Animated,
   ActivityIndicator,
   Alert
-  ActivityIndicator,
-  Alert
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -48,10 +46,8 @@ export default function TeacherDashboard({ route, navigation }) {
   // UI States
   const [activeTab, setActiveTab] = useState("dashboard");
   const [questions, setQuestions] = useState({}); // 🔥 State is Object for Concept Grouping
-  const [questions, setQuestions] = useState({}); // 🔥 State is Object for Concept Grouping
   const [stats, setStats] = useState({ gotIt: 0, sortOf: 0, lost: 0, total: 0, raw: { gotIt: 0, sortOf: 0, lost: 0 } });
   
-  // State for real-time student count
   // State for real-time student count
   const [connectedCount, setConnectedCount] = useState(0);
   const [isDbSessionActive, setIsDbSessionActive] = useState(true); 
@@ -66,7 +62,6 @@ export default function TeacherDashboard({ route, navigation }) {
     if (!sId) return;
 
     // 1. Session Metadata & Attendance
-    // 1. Session Metadata & Attendance
     const unsubSession = onSnapshot(doc(db, "sessions", sId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -75,8 +70,7 @@ export default function TeacherDashboard({ route, navigation }) {
       }
     });
 
-    // 2. 🔥 FIXED: Concept-based Live Questions Logic
-    // 2. 🔥 FIXED: Concept-based Live Questions Logic
+    // 2. Concept-based Live Questions Logic
     const qQuestions = query(
       collection(db, "questions"),
       where("sessionId", "==", sId),
@@ -87,8 +81,6 @@ export default function TeacherDashboard({ route, navigation }) {
       let data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       
       // 🔥 Logic: Group questions by conceptTag provided by Llama
-      
-      // 🔥 Logic: Group questions by conceptTag provided by Llama
       const grouped = {};
       data.forEach(q => {
         const concept = q.conceptTag || "General Clarification";
@@ -96,19 +88,8 @@ export default function TeacherDashboard({ route, navigation }) {
           grouped[concept] = [];
         }
         grouped[concept].push(q);
-        const concept = q.conceptTag || "General Clarification";
-        if (!grouped[concept]) {
-          grouped[concept] = [];
-        }
-        grouped[concept].push(q);
       });
 
-      // Sort questions within each concept by count/priority
-      Object.keys(grouped).forEach(key => {
-        grouped[key].sort((a, b) => (b.type === 1 ? 1 : -1) || (b.count || 1) - (a.count || 1));
-      });
-
-      setQuestions(grouped);
       // Sort questions within each concept by count/priority
       Object.keys(grouped).forEach(key => {
         grouped[key].sort((a, b) => (b.type === 1 ? 1 : -1) || (b.count || 1) - (a.count || 1));
@@ -117,7 +98,6 @@ export default function TeacherDashboard({ route, navigation }) {
       setQuestions(grouped);
     });
 
-    // 3. Signal Stats (Got It/Lost Bars)
     // 3. Signal Stats (Got It/Lost Bars)
     const unsubStats = onSnapshot(doc(db, "responses", sId), (docSnap) => {
       if (docSnap.exists()) {
@@ -141,7 +121,6 @@ export default function TeacherDashboard({ route, navigation }) {
   }, [sId]);
 
   // Handle stage transition when session ends
-  // Handle stage transition when session ends
   useEffect(() => {
     if (!isDbSessionActive && appStage === "active") {
       setAppStage("summary");
@@ -155,19 +134,15 @@ export default function TeacherDashboard({ route, navigation }) {
   // --- Actions ---
   const handleEndSession = async () => {
     // Ensure all questions are cleared before ending
-    // Ensure all questions are cleared before ending
     const hasActiveQuestions = Object.values(questions).some(arr => arr.length > 0);
     if (hasActiveQuestions) {
-      Alert.alert("Questions Pending", "Bhai, pehle saare student questions clear karo!");
       Alert.alert("Questions Pending", "Bhai, pehle saare student questions clear karo!");
       return;
     }
     
     try {
       await updateDoc(doc(db, "sessions", sId), { isActive: false });
-      await updateDoc(doc(db, "sessions", sId), { isActive: false });
     } catch (error) {
-      Alert.alert("Error", "Could not end session.");
       Alert.alert("Error", "Could not end session.");
     }
   };
@@ -190,7 +165,6 @@ export default function TeacherDashboard({ route, navigation }) {
         throw new Error("Backend failed to return success");
       }
     } catch (err) {
-      console.error("❌ Summary Error:", err);
       console.error("❌ Summary Error:", err);
     } finally {
       setLoadingSummary(false);
@@ -224,8 +198,6 @@ export default function TeacherDashboard({ route, navigation }) {
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 24 }}>
         <View style={[styles.pulseDot, { backgroundColor: '#10B981' }]} />
         <Text style={{ color: '#10B981', fontWeight: 'bold', fontSize: 16 }}>{connectedCount} students joined</Text>
-        <View style={[styles.pulseDot, { backgroundColor: '#10B981' }]} />
-        <Text style={{ color: '#10B981', fontWeight: 'bold', fontSize: 16 }}>{connectedCount} students joined</Text>
       </View>
     </View>
   );
@@ -239,9 +211,7 @@ export default function TeacherDashboard({ route, navigation }) {
             <View style={styles.headerRow}>
               <View><Text style={styles.mainTitle}>Understanding</Text><Text style={styles.topicTag}>{topic}</Text></View>
               <View style={[styles.activeIndicator, { backgroundColor: isDbSessionActive ? '#ECFDF5' : '#F1F5F9' }]}>
-              <View style={[styles.activeIndicator, { backgroundColor: isDbSessionActive ? '#ECFDF5' : '#F1F5F9' }]}>
                 <View style={[styles.pulseDot, { backgroundColor: indicatorColor }]} />
-                <Text style={[styles.liveText, { color: indicatorColor }]}>{isDbSessionActive ? `${connectedCount} ONLINE` : 'OFFLINE'}</Text>
                 <Text style={[styles.liveText, { color: indicatorColor }]}>{isDbSessionActive ? `${connectedCount} ONLINE` : 'OFFLINE'}</Text>
               </View>
             </View>
@@ -250,8 +220,8 @@ export default function TeacherDashboard({ route, navigation }) {
               <ProgressBar label={`Sort of (${stats.raw.sortOf})`} value={stats.sortOf} color="#F59E0B" />
               <ProgressBar label={`Lost (${stats.raw.lost})`} value={stats.lost} color="#EF4444" />
               <View style={[styles.aiInsightBox, { backgroundColor: stats.lost > 30 ? "#EF4444" : "#4338CA" }]}>
-                <MaterialCommunityIcons name="chart-bubble" size={20} color="white" /><Text style={styles.aiInsightText}>{stats.lost > 30 ? "High confusion detected! Recap recommended." : "Class pace looks good!"}</Text>
-                <MaterialCommunityIcons name="chart-bubble" size={20} color="white" /><Text style={styles.aiInsightText}>{stats.lost > 30 ? "High confusion detected! Recap recommended." : "Class pace looks good!"}</Text>
+                <MaterialCommunityIcons name="chart-bubble" size={20} color="white" />
+                <Text style={styles.aiInsightText}>{stats.lost > 30 ? "High confusion detected! Recap recommended." : "Class pace looks good!"}</Text>
               </View>
             </View>
             <View style={styles.miniStatsRow}>
@@ -265,13 +235,9 @@ export default function TeacherDashboard({ route, navigation }) {
             {Object.keys(questions).length === 0 ? (
               <View style={styles.emptyState}><Feather name="coffee" size={50} color="#CBD5E1" /><Text style={styles.emptyText}>No pending questions.</Text></View>
             ) : (
-              /* 🔥 FIXED UI LOGIC: Using Object.entries for Concept Mapping */
-              Object.entries(questions).map(([concept, questionsArray]) => (
-              /* 🔥 FIXED UI LOGIC: Using Object.entries for Concept Mapping */
               Object.entries(questions).map(([concept, questionsArray]) => (
                 <View key={concept} style={{ marginBottom: 25 }}>
                   <View style={styles.conceptHeader}><Text style={styles.conceptTitle}>{concept.toUpperCase()}</Text></View>
-                  {questionsArray.map((q) => (
                   {questionsArray.map((q) => (
                     <QuestionCard key={q.id} count={q.count} text={q.text} type={q.type} onDismiss={() => dismissQuestion(q.id)} />
                   ))}
@@ -300,15 +266,12 @@ export default function TeacherDashboard({ route, navigation }) {
       <ScrollView contentContainerStyle={styles.scrollCenter}>
         <Text style={styles.summaryTitle}>AI Analytics Report</Text>
         
-        {/* Safely check if finalSummary exists and has topics */}
         {!finalSummary || !finalSummary.topics ? (
           <View style={{ marginTop: 30, padding: 24, backgroundColor: '#F8FAFC', borderRadius: 16, width: '90%' }}>
             <Text style={{ fontSize: 16, color: '#64748B', textAlign: 'center' }}>Raw data is safely stored. AI summary not available or offline.</Text>
           </View>
         ) : (
           <View style={{ width: '100%', alignItems: 'center' }}>
-            
-            {/* 🔥 NEW: Render the Overall AI Idea & Top Doubt */}
             <View style={{ backgroundColor: '#EEF2FF', padding: 20, borderRadius: 16, width: '90%', marginBottom: 20, marginTop: 10 }}>
                <Text style={{ fontSize: 16, fontWeight: 'bold', color: '#312E81', marginBottom: 8 }}>Overall Insight</Text>
                <Text style={{ fontSize: 14, color: '#4338CA', lineHeight: 20 }}>{finalSummary.overallIdea}</Text>
@@ -317,7 +280,6 @@ export default function TeacherDashboard({ route, navigation }) {
                <Text style={{ fontSize: 14, color: '#B91C1C', fontWeight: '600' }}>{finalSummary.topDoubt}</Text>
             </View>
 
-            {/* 🔥 Render the Clustered Topics Table */}
             {finalSummary.topics.map((item, index) => (
               <View key={index} style={styles.summaryCard}>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -351,8 +313,10 @@ export default function TeacherDashboard({ route, navigation }) {
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.navHeader}>
-        <View style={styles.headerLeft}><Feather name="radio" size={18} color={isDbSessionActive ? "#10B981" : "#94A3B8"} /><Text style={[styles.headerSessionText, { color: isDbSessionActive ? "#10B981" : "#94A3B8" }]}>{isDbSessionActive ? 'Active' : 'Offline'}: {sId}</Text></View>
-        <View style={styles.headerLeft}><Feather name="radio" size={18} color={isDbSessionActive ? "#10B981" : "#94A3B8"} /><Text style={[styles.headerSessionText, { color: isDbSessionActive ? "#10B981" : "#94A3B8" }]}>{isDbSessionActive ? 'Active' : 'Offline'}: {sId}</Text></View>
+        <View style={styles.headerLeft}>
+          <Feather name="radio" size={18} color={isDbSessionActive ? "#10B981" : "#94A3B8"} />
+          <Text style={[styles.headerSessionText, { color: isDbSessionActive ? "#10B981" : "#94A3B8" }]}>{isDbSessionActive ? 'Active' : 'Offline'}: {sId}</Text>
+        </View>
         <TouchableOpacity onPress={() => navigation.goBack()}><Feather name="x-circle" size={24} color="#64748B" /></TouchableOpacity>
       </View>
       {appStage === "setup" && renderSetup()}
@@ -372,10 +336,13 @@ export default function TeacherDashboard({ route, navigation }) {
 function ProgressBar({ label, value, color }) {
   return (
     <View style={{ marginBottom: 18 }}>
-      <View style={styles.barHeader}><Text style={styles.barLabel}>{label.toUpperCase()}</Text><Text style={styles.barValue}>{value}%</Text></View>
-      <View style={styles.barBg}><View style={[styles.barFill, { width: `${value}%`, backgroundColor: color }]} /></View>
-      <View style={styles.barHeader}><Text style={styles.barLabel}>{label.toUpperCase()}</Text><Text style={styles.barValue}>{value}%</Text></View>
-      <View style={styles.barBg}><View style={[styles.barFill, { width: `${value}%`, backgroundColor: color }]} /></View>
+      <View style={styles.barHeader}>
+        <Text style={styles.barLabel}>{label.toUpperCase()}</Text>
+        <Text style={styles.barValue}>{value}%</Text>
+      </View>
+      <View style={styles.barBg}>
+        <View style={[styles.barFill, { width: `${value}%`, backgroundColor: color }]} />
+      </View>
     </View>
   );
 }
@@ -384,24 +351,38 @@ function QuestionCard({ count, text, type, onDismiss }) {
   const isLost = type === 1;
   return (
     <View style={[styles.questionCard, { borderLeftColor: isLost ? "#EF4444" : "#F59E0B" }]}>
-      <View style={[styles.countBox, { backgroundColor: isLost ? "#EF4444" : "#F59E0B" }]}><Text style={styles.countText}>{count}</Text></View>
-      <View style={{ flex: 1, paddingHorizontal: 12 }}><Text style={styles.questionText} numberOfLines={2}>{text}</Text><Text style={[styles.priorityTag, { color: isLost ? "#EF4444" : "#F59E0B" }]}>{isLost ? "🔥 URGENT" : "CLARIFICATION"}</Text></View>
-      <TouchableOpacity onPress={onDismiss} style={styles.dismissBtn}><Feather name="check" size={20} color="#10B981" /></TouchableOpacity>
-      <View style={[styles.countBox, { backgroundColor: isLost ? "#EF4444" : "#F59E0B" }]}><Text style={styles.countText}>{count}</Text></View>
-      <View style={{ flex: 1, paddingHorizontal: 12 }}><Text style={styles.questionText} numberOfLines={2}>{text}</Text><Text style={[styles.priorityTag, { color: isLost ? "#EF4444" : "#F59E0B" }]}>{isLost ? "🔥 URGENT" : "CLARIFICATION"}</Text></View>
-      <TouchableOpacity onPress={onDismiss} style={styles.dismissBtn}><Feather name="check" size={20} color="#10B981" /></TouchableOpacity>
+      <View style={[styles.countBox, { backgroundColor: isLost ? "#EF4444" : "#F59E0B" }]}>
+        <Text style={styles.countText}>{count}</Text>
+      </View>
+      <View style={{ flex: 1, paddingHorizontal: 12 }}>
+        <Text style={styles.questionText} numberOfLines={2}>{text}</Text>
+        <Text style={[styles.priorityTag, { color: isLost ? "#EF4444" : "#F59E0B" }]}>
+          {isLost ? "🔥 URGENT" : "CLARIFICATION"}
+        </Text>
+      </View>
+      <TouchableOpacity onPress={onDismiss} style={styles.dismissBtn}>
+        <Feather name="check" size={20} color="#10B981" />
+      </TouchableOpacity>
     </View>
   );
 }
 
 function MiniStat({ label, value }) {
-  return (<View style={styles.miniStatBox}><Text style={styles.miniStatLabel}>{label}</Text><Text style={styles.miniStatValue}>{value}</Text></View>);
-  return (<View style={styles.miniStatBox}><Text style={styles.miniStatLabel}>{label}</Text><Text style={styles.miniStatValue}>{value}</Text></View>);
+  return (
+    <View style={styles.miniStatBox}>
+      <Text style={styles.miniStatLabel}>{label}</Text>
+      <Text style={styles.miniStatValue}>{value}</Text>
+    </View>
+  );
 }
 
 function NavTab({ icon, label, active, onPress }) {
-  return (<TouchableOpacity style={styles.navTab} onPress={onPress}><Feather name={icon} size={24} color={active ? "#000066" : "#94A3B8"} /><Text style={[styles.navLabel, active && { color: "#000066" }]}>{label}</Text></TouchableOpacity>);
-  return (<TouchableOpacity style={styles.navTab} onPress={onPress}><Feather name={icon} size={24} color={active ? "#000066" : "#94A3B8"} /><Text style={[styles.navLabel, active && { color: "#000066" }]}>{label}</Text></TouchableOpacity>);
+  return (
+    <TouchableOpacity style={styles.navTab} onPress={onPress}>
+      <Feather name={icon} size={24} color={active ? "#000066" : "#94A3B8"} />
+      <Text style={[styles.navLabel, active && { color: "#000066" }]}>{label}</Text>
+    </TouchableOpacity>
+  );
 }
 
 // --- STYLES ---
