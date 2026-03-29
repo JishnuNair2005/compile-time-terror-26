@@ -204,7 +204,7 @@ const styles = StyleSheet.create({
   inputIcon: { marginRight: 10 },
   input: { flex: 1, height: 50, fontSize: 14, color: "#1E293B" },
   
-  createBtn: { backgroundColor: "#000066", height: 55, borderRadius: 12, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 10 },
+  createBtn: { backgroundColor: "#2569d8ff", height: 55, borderRadius: 12, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 10 },
   createBtnText: { color: "white", fontWeight: "900", letterSpacing: 1 },
 
   historyHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 },
@@ -215,6 +215,6 @@ const styles = StyleSheet.create({
   sessionSubject: { fontSize: 14, fontWeight: "bold", color: "#1E293B" },
   sessionTopic: { fontSize: 12, color: "#64748B", marginTop: 2 },
   sessionBadge: { backgroundColor: "#E0E7FF", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
-  sessionCode: { color: "#4338CA", fontWeight: "bold", fontSize: 14 },
+  sessionCode: { color: "#0b275bff", fontWeight: "bold", fontSize: 14 },
   emptyText: { textAlign: "center", color: "#94A3B8", marginTop: 20 }
 });

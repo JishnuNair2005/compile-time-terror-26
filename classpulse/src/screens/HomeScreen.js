@@ -1,87 +1,55 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons'; // Standard with Expo
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
+import { MaterialIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+
+const { width } = Dimensions.get('window');
 
 export default function HomeScreen({ navigation }) {
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>STOIC SIGNAL</Text>
-      <Text style={styles.subtitle}>Select your role to begin</Text>
+    <LinearGradient colors={['#F8FAFC', '#E0E7FF']} style={styles.container}>
+      <View style={styles.headerBox}>
+        <Text style={styles.title}>CLASSPULSE</Text>
+        <Text style={styles.subtitle}>Intelligent Classroom Feedback</Text>
+      </View>
 
-      {/* Teacher / Admin Button */}
       <TouchableOpacity 
-        style={styles.teacherCard} 
+        activeOpacity={0.9}
+        style={styles.cardWrapper} 
         onPress={() => navigation.navigate('Login')}
       >
-        <MaterialIcons name="people-outline" size={50} color="white" />
-        <Text style={styles.teacherText}>I am a Teacher</Text>
+        <LinearGradient colors={['#2f78d8ff', '#0e2a4fff']} style={styles.teacherCard}>
+          <MaterialIcons name="person-outline" size={60} color="white" />
+          <Text style={styles.cardTitleWhite}>I am a Teacher</Text>
+          <Text style={styles.cardSubWhite}>Lead and analyze live sessions</Text>
+        </LinearGradient>
       </TouchableOpacity>
 
-      {/* Student / User Button */}
       <TouchableOpacity 
-        style={styles.studentCard} 
+        activeOpacity={0.9}
+        style={styles.cardWrapper} 
         onPress={() => navigation.navigate('User')}
       >
-        <MaterialIcons name="help-outline" size={50} color="#000066" />
-        <Text style={styles.studentText}>I am a Student</Text>
+        <View style={styles.studentCard}>
+          <MaterialIcons name="school" size={60} color="#000066" />
+          <Text style={styles.cardTitleBlue}>I am a Student</Text>
+          <Text style={styles.cardSubBlue}>Join the feed and share feedback</Text>
+        </View>
       </TouchableOpacity>
-    </View>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F8F9FB',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: '900',
-    color: '#000066',
-    marginBottom: 10,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: '#555',
-    marginBottom: 40,
-  },
-  teacherCard: {
-    backgroundColor: '#000066',
-    width: '100%',
-    height: 180,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 20,
-    elevation: 5, // Shadow for Android
-    shadowColor: '#000', // Shadow for iOS
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-  },
-  teacherText: {
-    color: 'white',
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginTop: 10,
-  },
-  studentCard: {
-    backgroundColor: '#F0F2F5',
-    width: '100%',
-    height: 180,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#D1D5DB',
-    elevation: 2,
-  },
-  studentText: {
-    color: '#000066',
-    fontSize: 22,
-    fontWeight: 'bold',
-    marginTop: 10,
-  },
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 25 },
+  headerBox: { alignItems: 'center', marginBottom: 50 },
+  title: { fontSize: 36, fontWeight: '900', color: '#000066', letterSpacing: -1 },
+  subtitle: { fontSize: 16, color: '#64748B', fontWeight: '600' },
+  cardWrapper: { width: '100%', marginBottom: 20 },
+  teacherCard: { padding: 30, borderRadius: 32, alignItems: 'center', elevation: 12, shadowColor: '#000066', shadowOpacity: 0.3, shadowRadius: 20 },
+  studentCard: { padding: 30, borderRadius: 32, alignItems: 'center', backgroundColor: 'white', borderWidth: 1, borderColor: '#E2E8F0', elevation: 4 },
+  cardTitleWhite: { color: 'white', fontSize: 24, fontWeight: '900', marginTop: 15 },
+  cardSubWhite: { color: 'rgba(255,255,255,0.7)', fontSize: 13, marginTop: 5 },
+  cardTitleBlue: { color: '#000066', fontSize: 24, fontWeight: '900', marginTop: 15 },
+  cardSubBlue: { color: '#64748B', fontSize: 13, marginTop: 5 },
 });
