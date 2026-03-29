@@ -173,7 +173,9 @@ useEffect(() => {
       const joinUrl = API_URL.replace('/questions', `/sessions/${sessionCodeToVerify}/join`);
       const response = await fetchWithTimeout(joinUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        // 🔥 FIX: You MUST send the deviceId here so Python can read it!
+        body: JSON.stringify({ deviceId: deviceId }) 
       });
       
       const data = await response.json();
@@ -253,7 +255,6 @@ useEffect(() => {
       showCustomAlert("Unrecognized QR format", "error");
     }
 
-    setTimeout(() => { hasScanned.current = false; }, 2000);
     setTimeout(() => { hasScanned.current = false; }, 2000);
   };
 
@@ -374,7 +375,6 @@ useEffect(() => {
           </View>
           <View style={styles.buttonGroup}>
             <TouchableOpacity style={styles.joinButton} onPress={onJoin} disabled={isVerifying}>
-              {isVerifying ? <ActivityIndicator color="white" /> : <Text style={styles.joinButtonText}>JOIN CLASS</Text>}
               {isVerifying ? <ActivityIndicator color="white" /> : <Text style={styles.joinButtonText}>JOIN CLASS</Text>}
             </TouchableOpacity>
             <TouchableOpacity style={styles.qrButton} onPress={openScanner}>
