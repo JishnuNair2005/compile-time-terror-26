@@ -6,5 +6,8 @@ class QuestionPayload(BaseModel):
     deviceId: str
     text: str
     questionType: int
-    previousQuestionType: Optional[int] = None  # <--- NEW
-    computeMode: str
+    computeMode: str = "openai"
+    # 🔥 New fields expected from UserScreen.js
+    teacherId: Optional[str] = "unknown"
+    subject: Optional[str] = "General"
+    topic: Optional[str] = "Unspecified"

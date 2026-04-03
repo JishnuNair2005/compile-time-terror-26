@@ -1,67 +1,91 @@
 from fastapi import APIRouter, HTTPException
 from google.cloud import firestore as google_firestore
-from app.models.question import QuestionPayload
-from app.services.question_service import process_question
-from app.core.config import db,openai_client
-
-router = APIRouter()
-
 from pydantic import BaseModel
 import json
 from datetime import datetime
 
+# Assuming these are imported correctly in your project
+from app.models.question import QuestionPayload 
+from app.services.question_service import process_question
+from app.core.config import db, openai_client
+
+router = APIRouter()
+
+# --- PYDANTIC MODELS ---
+class DecrementPayload(BaseModel):
+    questionType: int
+
+class JoinPayload(BaseModel):
+    deviceId: str
+
+# --- 1. AI SESSION SUMMARY ---
 @router.get("/sessions/{session_id}/summary")
 def get_session_summary(session_id: str):
     try:
-        # 1. Fetch all questions asked during this session
+        # Fetch Session Context for better AI prompting
+        session_ref = db.collection('sessions').document(session_id).get()
+        if not session_ref.exists:
+            return {"success": False, "message": "Session not found", "data": None}
+            
+        session_data = session_ref.to_dict()
+        subject = session_data.get('subject', 'General')
+        topic = session_data.get('topic', 'Ongoing Lecture')
+
+        # Fetch Questions
         questions_ref = db.collection('questions').where('sessionId', '==', session_id).stream()
         
         questions_data = []
         for doc in questions_ref:
             q = doc.to_dict()
             
-            # Extract text and properly format the timestamp (converting from milliseconds)
+            # Only summarize actual text questions
             if q.get('text') and q['text'].strip() != "":
                 time_str = "Unknown time"
                 if 'timestamp' in q and q['timestamp']:
-                    # Convert the millisecond timestamp saved by your question_service to a readable time
-                    dt = datetime.fromtimestamp(q['timestamp'] / 1000.0)
-                    time_str = dt.strftime('%I:%M %p') # e.g., "10:15 AM"
+                    # Handle both integer ms and Firestore Datetime objects safely
+                    if isinstance(q['timestamp'], int):
+                        dt = datetime.fromtimestamp(q['timestamp'] / 1000.0)
+                        time_str = dt.strftime('%I:%M %p')
+                    else:
+                        time_str = q['timestamp'].strftime('%I:%M %p')
                 
-                questions_data.append(f"[{time_str}] Student asked: {q['text']}")
+                # Add conceptTag and type to the AI's context
+                q_type = "Lost" if q.get('type') == 1 else "Sort Of"
+                questions_data.append(f"[{time_str}] [{q_type}] ({q.get('conceptTag', 'General')}): {q['text']}")
 
-        # 2. Fallback if no questions were asked (Exactly as you requested!)
+        # Fallback if no text questions were asked
         if not questions_data:
             return {
                 "success": True, 
                 "data": {
-                    "overallIdea": "The session was overall inactive. You need to make lectures more interactive to gauge student understanding.",
-                    "topDoubt": "N/A - No questions asked",
+                    "overallIdea": f"The class on {topic} lacked interactive text questions. Rely on the Got It / Lost ratio for understanding.",
+                    "topDoubt": "N/A - No written questions",
                     "topics": [
                         {
-                            "topic": "No inputs received", 
+                            "topic": "No text inputs received", 
                             "doubtsLevel": "Low", 
                             "timestamps": "N/A", 
-                            "summary": "No questions or confusion signals were submitted by the class."
+                            "summary": "Students used the quick-poll buttons but did not submit written confusion signals."
                         }
                     ]
                 }
             }
 
-        # 3. Prepare the prompt for Llama
+        # Prepare Llama Prompt with Subject/Topic Context
         raw_text = "\n".join(questions_data)
         prompt = f"""
-        You are an expert teaching assistant. Here are the questions and confusion signals submitted by students during a live class, along with timestamps:
+        You are an expert teaching assistant analyzing a class on '{subject}', specifically covering '{topic}'.
+        Here are the questions and confusion signals submitted by students, along with timestamps and AI-generated concept tags:
         
         {raw_text}
         
         Task:
-        1. Write a 1-sentence 'overallIdea' summarizing how well the class understood the material based on the questions.
-        2. Identify the 'topDoubt' - the single specific concept that had the most doubts/questions.
+        1. Write a 1-sentence 'overallIdea' summarizing how well the class understood {topic}.
+        2. Identify the 'topDoubt' - the single specific concept that had the most doubts.
         3. Cluster the questions into 2 to 4 main topics of confusion.
         4. For each topic, identify the 'doubtsLevel' ("High", "Medium", or "Low") and note the specific timestamps when confusion spiked.
         
-        Respond STRICTLY in valid JSON format. Do not include markdown tags like ```json. Use this EXACT structure:
+        Respond STRICTLY in valid JSON format using this EXACT structure:
         {{
           "overallIdea": "Brief overall summary of the class's performance...",
           "topDoubt": "Name of the most confusing concept",
@@ -76,16 +100,14 @@ def get_session_summary(session_id: str):
         }}
         """
 
-        # 4. Call local Llama
         chat_response = openai_client.chat.completions.create(
             model="llama3.2",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1, # Dropped slightly lower for strict JSON adherence
+            temperature=0.1, 
         )
         
         ai_response = chat_response.choices[0].message.content.strip()
         
-        # 5. Clean and parse the JSON safely
         if ai_response.startswith("```json"):
             ai_response = ai_response[7:-3].strip()
         elif ai_response.startswith("```"):
@@ -98,11 +120,9 @@ def get_session_summary(session_id: str):
     except Exception as e:
         print(f"Summary Generation Error: {e}")
         return {"success": False, "message": "Failed to generate summary", "data": None}
-# Create a tiny model for the decrement payload
-class DecrementPayload(BaseModel):
-    questionType: int
 
-# --- NEW ROUTE: Subtract from counter when timer ends ---
+
+# --- 2. DECREMENT STATUS (Timer Ended / Vote Cleared) ---
 @router.post("/sessions/{session_id}/decrement")
 def decrement_status(session_id: str, payload: DecrementPayload):
     try:
@@ -114,75 +134,78 @@ def decrement_status(session_id: str, payload: DecrementPayload):
 
         session_ref = db.collection('responses').document(session_id)
         
-        # Safely subtract 1 from whichever button they originally pressed
-        session_ref.update({
-            field_to_decrement: google_firestore.Increment(-1)
-        })
+        # We wrap in a transaction or simple read-check to avoid dropping below 0
+        doc = session_ref.get()
+        if doc.exists:
+            current_val = doc.to_dict().get(field_to_decrement, 0)
+            if current_val > 0:
+                session_ref.update({
+                    field_to_decrement: google_firestore.Increment(-1)
+                })
         
-        return {"valid": True, "message": "Counter decremented"}
+        return {"valid": True, "message": "Counter decremented safely"}
         
     except Exception as e:
         print(f"Error decrementing session: {e}")
-        # We don't want to crash the frontend if this fails, just fail silently
         return {"valid": False, "message": "Failed to decrement"}
 
-# --- ROUTE: Join Session & Increment Counter ---
+
+# --- 3. JOIN SESSION ---
 @router.post("/sessions/{session_id}/join")
-def join_session(session_id: str, payload: dict):
-    # 🔥 CRITICAL FIX: Frontend se deviceId uthayega
-    device_id = payload.get("deviceId")
+def join_session(session_id: str, payload: JoinPayload):
+    device_id = payload.deviceId
     if not device_id:
         raise HTTPException(status_code=400, detail="Device ID missing in payload")
 
     try:
         session_ref = db.collection('sessions').document(session_id)
+        session_doc = session_ref.get()
         
-        # Unique ID for this specific student in this specific session
+        if not session_doc.exists:
+            return {"valid": False, "message": "Session not found"}
+            
+        session_data = session_doc.to_dict()
+        
+        # Don't allow joins if teacher ended the session
+        if session_data.get('isActive') is False:
+             return {"valid": False, "message": "This session has ended."}
+
         participant_id = f"{session_id}_{device_id}" 
         p_ref = db.collection('session_participants').document(participant_id)
-        
         participant_doc = p_ref.get()
         
+        # Standard return payload matching UserScreen.js expectations
+        response_data = {
+            "valid": True,
+            "subject": session_data.get("subject", "General"),
+            "topic": session_data.get("topic", "Unspecified"),
+            "teacherId": session_data.get("teacherId", "unknown"),
+        }
+        
         if participant_doc.exists:
-            # ✅ RE-JOINING: DO NOT INCREMENT
-            session_data = session_ref.get().to_dict()
-            return {
-                "valid": True, 
-                "message": "Welcome back!", 
-                "alreadyJoined": True,
-                "subject": session_data.get("subject", "General")
-            }
-
-        session_doc = session_ref.get()
-        if session_doc.exists:
-            # ✅ NEW ENTRY: INCREMENT COUNTER
+            response_data["message"] = "Welcome back!"
+            response_data["alreadyJoined"] = True
+        else:
             session_ref.update({'totalJoined': google_firestore.Increment(1)})
-            
             p_ref.set({
                 'deviceId': device_id,
                 'sessionId': session_id,
                 'joinedAt': google_firestore.SERVER_TIMESTAMP
             })
+            response_data["message"] = "First time join"
+            response_data["alreadyJoined"] = False
             
-            return {
-                "valid": True, 
-                "message": "First time join",
-                "alreadyJoined": False,
-                "subject": session_doc.to_dict().get("subject", "General")
-            }
-            
-        return {"valid": False, "message": "Session not found"}
+        return response_data
+        
     except Exception as e:
+        print(f"Join Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ROUTE: Submit Question (Llama Bouncer & Tagging) ---
+
+# --- 4. SUBMIT QUESTION ---
 @router.post("/questions")
 def submit_question(payload: QuestionPayload):
-    """
-    Processes questions with AI filtering and device tracking.
-    """
     try:
-        # Hand off the logic to service layer for spam score & concept tagging
         result = process_question(payload)
         return result
     except Exception as e:
@@ -190,13 +213,9 @@ def submit_question(payload: QuestionPayload):
         raise HTTPException(status_code=500, detail="Failed to process question")
 
 
-
-# --- ROUTE: Get Student Count (Polling Support) ---
+# --- 5. GET SESSION COUNT ---
 @router.get("/sessions/{session_id}/count")
 def get_session_count(session_id: str):
-    """
-    Returns the real-time attendee count for the admin dashboard.
-    """
     try:
         session_ref = db.collection('sessions').document(session_id)
         doc = session_ref.get()

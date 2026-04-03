@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone, timedelta
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -8,132 +9,167 @@ from app.core.config import db, openai_client
 # --- 1. MATHEMATICAL UTILITIES ---
 
 def calculate_similarity(vec1, vec2):
-    """
-    Calculates cosine similarity between two embedding vectors manually.
-    Essential for Nomic-Embed-Text comparisons via Ollama.
-    """
     v1 = np.array(vec1)
     v2 = np.array(vec2)
-    
-    if v1.shape != v2.shape:
-        print(f"⚠️ Dimension mismatch in embeddings: {v1.shape} vs {v2.shape}")
-        return 0.0 
-        
-    dot_product = np.dot(v1, v2)
-    norm_v1 = np.linalg.norm(v1)
-    norm_v2 = np.linalg.norm(v2)
-    
-    return dot_product / (norm_v1 * norm_v2)
+    if v1.shape != v2.shape: return 0.0 
+    return np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
 
-# --- 2. ANALYTICS & SPAM BOUNCER LOGIC ---
 
-def update_device_metrics(device_id, subject, question_type, is_ai_spam=False):
+# --- 2. THE SMART SPAM PENALTY (devices) ---
+
+def check_device_access(device_id):
     """
-    🔥 ADVANCED TRACKING: Monitors spamScore and lostCount per device.
-    If spamScore >= 5, it triggers the 'isFlagged' status to freeze student UI.
+    Checks if the device is currently flagged or on cooldown.
+    Returns (is_allowed, error_message)
     """
-    if not device_id or not subject:
-        return
-
-    # Document ID follows the format: deviceId_SubjectName
-    doc_id = f"{device_id}_{subject.replace(' ', '_')}"
-    ref = db.collection("deviceSubjectStats").document(doc_id)
+    if not device_id: return True, ""
     
-    # Weighted Scoring: AI Rejections are penalized more heavily (+2) than simple Lost clicks.
+    dev_ref = db.collection('devices').document(device_id)
+    doc = dev_ref.get()
+    
+    if doc.exists:
+        data = doc.to_dict()
+        if data.get('isFlagged', False):
+            return False, "Your device has been flagged for spamming."
+            
+        cooldown = data.get('cooldownUntil')
+        # Check if cooldown exists and is in the future
+        if cooldown and cooldown > datetime.now(timezone.utc):
+            return False, "You are submitting too fast. Please wait a moment."
+            
+    return True, ""
+
+def update_device_metrics(device_id, question_type, is_ai_spam=False):
+    """
+    Updates global device metrics. Triggers cooldowns if spamming.
+    """
+    if not device_id: return
+
+    dev_ref = db.collection("devices").document(device_id)
+    
+    # Weighted Scoring: AI Rejections = +2 spam points, 'Lost' clicks = +1, 'Got It' = 0
     spam_increment = 2 if is_ai_spam else (1 if question_type == 1 else 0)
 
-    update_data = {
-        "deviceId": device_id,
-        "subject": subject,
-        "spamScore": google_firestore.Increment(spam_increment),
-        "totalResponses": google_firestore.Increment(1),
-        "lastUpdated": google_firestore.SERVER_TIMESTAMP
-    }
-
-    # Tracking specific 'Lost' interactions as requested in the schema
-    if question_type == 1:
-        update_data["lostCount"] = google_firestore.Increment(1)
-
     try:
-        # Check current threshold before applying update
-        snap = ref.get()
-        if snap.exists:
-            current_stats = snap.to_dict()
-            current_spam = current_stats.get("spamScore", 0)
-            
-            # Auto-Flagging Logic: Freeze user if they hit the threshold
-            if current_spam + spam_increment >= 5:
-                update_data["isFlagged"] = True
-                print(f"🚫 SPAM ALERT: Device {device_id} has been flagged and frozen.")
-
-        ref.set(update_data, merge=True)
+        snap = dev_ref.get()
+        current_spam = 0
         
-        # Legacy support for deviceStat (falseCount tracking)
-        if is_ai_spam:
-            db.collection("deviceStat").document(doc_id).set({
-                "deviceId": device_id,
-                "subject": subject,
-                "falseCount": google_firestore.Increment(1),
-                "lastUpdated": int(time.time() * 1000)
-            }, merge=True)
+        if snap.exists:
+            current_spam = snap.to_dict().get("spamScore", 0)
+
+        # Baseline updates
+        update_data = {
+            "deviceId": device_id,
+            "totalResponses": google_firestore.Increment(1),
+            "spamScore": google_firestore.Increment(spam_increment),
+            "lastUpdated": google_firestore.SERVER_TIMESTAMP
+        }
+        
+        if question_type == 1:
+            update_data["lostCount"] = google_firestore.Increment(1)
+
+        # 🚨 PENALTY LOGIC: Flag them or put them on cooldown
+        new_spam_score = current_spam + spam_increment
+        if new_spam_score >= 10:
+            update_data["isFlagged"] = True
+            print(f"🚫 PERMA-BLOCK: Device {device_id} flagged.")
+        elif new_spam_score >= 5:
+            # 5 Minute cooldown
+            update_data["cooldownUntil"] = datetime.now(timezone.utc) + timedelta(minutes=5)
+            print(f"⏳ COOLDOWN: Device {device_id} blocked for 5 mins.")
+
+        dev_ref.set(update_data, merge=True)
             
     except Exception as e:
         print(f"❌ Analytics Error in Firestore: {e}")
 
-def update_session_counters(session_id, question_type, previous_type=None):
-    """
-    Updates the real-time 'responses' collection for the teacher's progress bars.
-    Handles both increments and decrements (if a user changes their mind).
-    """
-    field_map = {
-        2: 'gotIt',
-        0: 'sortOf',
-        1: 'lost'
-    }
-    
-    updates = { 'lastActiveAt': int(time.time() * 1000) }
-    
-    # Increment new choice
-    new_field = field_map.get(question_type)
-    if new_field:
-        updates[new_field] = google_firestore.Increment(1)
 
-    # Decrement previous choice to maintain accurate unique-user count
-    if previous_type is not None:
-        old_field = field_map.get(previous_type)
-        if old_field and old_field != new_field:
-            updates[old_field] = google_firestore.Increment(-1)
-        elif old_field == new_field:
-            # User voted the same thing; cancel the increment
-            if new_field in updates: del updates[new_field]
-                
-    if len(updates) > 1:
-        db.collection('responses').document(session_id).set(updates, merge=True)
+# --- 3. THE REAL-TIME PROGRESS BAR & TIMELINE (responses) ---
 
-# --- 3. MAIN PROCESSING ENGINE ---
+@google_firestore.transactional
+def update_responses_txn(transaction, session_ref, question_type, previous_type=None):
+    """
+    Uses a Firestore transaction to safely increment counters, calculate emergency status, 
+    and append the snapshot to the timeline array without race conditions.
+    """
+    snapshot = session_ref.get(transaction=transaction)
+    
+    # Default state if document doesn't exist
+    data = snapshot.to_dict() if snapshot.exists else {'gotIt': 0, 'sortOf': 0, 'lost': 0, 'timeline': []}
+    
+    got_it = data.get('gotIt', 0)
+    sort_of = data.get('sortOf', 0)
+    lost = data.get('lost', 0)
+    timeline = data.get('timeline', [])
+
+    # Apply Increments
+    if question_type == 2: got_it += 1
+    elif question_type == 0: sort_of += 1
+    elif question_type == 1: lost += 1
+
+    # Apply Decrements (if user changed their mind)
+    if previous_type == 2: got_it = max(0, got_it - 1)
+    elif previous_type == 0: sort_of = max(0, sort_of - 1)
+    elif previous_type == 1: lost = max(0, lost - 1)
+
+    # 🔥 NEW: Emergency Detection Logic
+    total = got_it + sort_of + lost
+    lost_percent = (lost / total * 100) if total > 0 else 0
+    is_emergency = lost_percent > 40 and total >= 10
+
+    # Format the timeline entry (e.g., "10:14 AM")
+    from datetime import datetime # Make sure this is imported at the top of your file
+    time_str = datetime.now().strftime("%I:%M %p")
+    
+    # Optimization: Only append if the minute has changed
+    if len(timeline) == 0 or timeline[-1].get('time') != time_str:
+        timeline.append({
+            "time": time_str,
+            "gotIt": got_it,
+            "sortOf": sort_of,
+            "lost": lost
+        })
+    else:
+        # Update the existing minute's snapshot
+        timeline[-1] = {
+            "time": time_str,
+            "gotIt": got_it,
+            "sortOf": sort_of,
+            "lost": lost
+        }
+
+    # Save everything back to Firestore safely
+    transaction.set(session_ref, {
+        'gotIt': got_it,
+        'sortOf': sort_of,
+        'lost': lost,
+        'emergencyAlert': is_emergency, # 🔥 This flag triggers the React Native UI
+        'lastActiveAt': google_firestore.SERVER_TIMESTAMP,
+        'timeline': timeline
+    }, merge=True)
+
+
+# --- 4. MAIN PROCESSING ENGINE ---
 
 def process_question(payload):
-    """
-    The Core Engine: Context Fetching -> AI Filtering -> Merging -> Storage.
-    """
-    # Step 1: Fetch Session Metadata
-    session_ref = db.collection('sessions').document(payload.sessionId)
-    session_doc = session_ref.get()
-    
-    if not session_doc.exists:
-        return {"success": False, "message": "Session not found."}
-        
-    session_data = session_doc.to_dict()
-    subject = session_data.get('subject', 'General Learning')
-    topic = session_data.get('topic', 'Ongoing Discussion')
+    # Step 1: Pre-Flight Check (Spam Bouncer)
+    is_allowed, error_msg = check_device_access(payload.deviceId)
+    if not is_allowed:
+        return {"success": False, "message": error_msg}
 
-    # Step 2: Signal Handling (Empty Text)
+    # Step 2: Fetch Session Metadata (or rely on payload to save DB reads)
+    subject = getattr(payload, 'subject', 'General Learning')
+    topic = getattr(payload, 'topic', 'Ongoing Discussion')
+    teacher_id = getattr(payload, 'teacherId', 'unknown')
+
+    # Step 3: Signal Handling (Empty Text / Just clicking 'Got It')
     if not payload.text or payload.text.strip() == "":
-        update_session_counters(payload.sessionId, payload.questionType)
-        update_device_metrics(payload.deviceId, subject, payload.questionType, is_ai_spam=False)
+        txn = db.transaction()
+        update_responses_txn(txn, db.collection('responses').document(payload.sessionId), payload.questionType)
+        update_device_metrics(payload.deviceId, payload.questionType, is_ai_spam=False)
         return {"success": True, "message": "Signal recorded."}
 
-    # Step 3: AI Bouncer & Concept Tagging (Llama 3.2 via Ollama)
+    # Step 4: AI Concept Tagging & Relevancy Filter
     prompt = f"""You are a strict teacher's assistant for {subject}.
     Topic: {topic}. 
     Analyze the question: "{payload.text}"
@@ -143,7 +179,7 @@ def process_question(payload):
     
     Response format: [DECISION] | [CONCEPT]"""
 
-    ai_tag = "General"
+    ai_tag = "General Clarification"
     try:
         chat_response = openai_client.chat.completions.create(
             model="llama3.2",
@@ -154,26 +190,27 @@ def process_question(payload):
         ai_output = chat_response.choices[0].message.content.strip().upper()
         
         if "|" in ai_output:
-            decision, ai_tag = ai_output.split("|")
+            decision, extracted_tag = ai_output.split("|")
             decision = decision.strip()
-            ai_tag = ai_tag.strip().title()
+            ai_tag = extracted_tag.strip().title()
         else:
             decision = ai_output
 
-        # If AI rejects the question, flag it as spam
+        # If AI rejects the question, penalize the device
         if "NO" in decision and "YES" not in decision:
             print(f"🚫 AI Bouncer Rejection: {payload.text}")
-            update_device_metrics(payload.deviceId, subject, payload.questionType, is_ai_spam=True)
+            update_device_metrics(payload.deviceId, payload.questionType, is_ai_spam=True)
             return {"success": False, "message": f"Stay focused on {topic}."}
             
     except Exception as e:
         print(f"⚠️ AI Bouncer bypass due to error: {e}")
 
-    # Step 4: Final Verification Passed - Update Metrics
-    update_session_counters(payload.sessionId, payload.questionType)
-    update_device_metrics(payload.deviceId, subject, payload.questionType, is_ai_spam=False)
+    # Step 5: Update Metrics (Transaction + Device Log)
+    txn = db.transaction()
+    update_responses_txn(txn, db.collection('responses').document(payload.sessionId), payload.questionType)
+    update_device_metrics(payload.deviceId, payload.questionType, is_ai_spam=False)
 
-    # Step 5: Duplicate Merging Logic (TF-IDF or Embeddings)
+    # Step 6: Duplicate Clustering (The questions collection)
     questions_ref = db.collection('questions')
     active_questions = list(questions_ref.where('sessionId', '==', payload.sessionId).where('isActive', '==', True).stream())
     
@@ -181,7 +218,6 @@ def process_question(payload):
     SIMILARITY_THRESHOLD = 0.70 
 
     if payload.computeMode == 'tfidf':
-        # --- TF-IDF MERGING ---
         if len(active_questions) > 0:
             corpus = [payload.text.lower()]
             map_docs = []
@@ -200,7 +236,7 @@ def process_question(payload):
                     map_docs[max_sim_idx].reference.update({'count': google_firestore.Increment(1)})
                     merged = True
     else:
-        # --- OLLAMA EMBEDDING MERGING ---
+        # Nomic Embedding logic
         emb_res = openai_client.embeddings.create(input=payload.text, model="nomic-embed-text")
         new_emb = emb_res.data[0].embedding
         
@@ -213,28 +249,29 @@ def process_question(payload):
                     merged = True
                     break
 
-    # Step 6: Create New Entry if not merged
+    # Step 7: Final Schema Writing
     if not merged:
         new_q = {
-            'count': 1,
-            'isActive': True,
-            'text': payload.text,
-            'normalized': payload.text.strip().lower(),
             'sessionId': payload.sessionId,
-            'type': payload.questionType,
-            'timestamp': int(time.time() * 1000),
             'deviceId': payload.deviceId,
+            'teacherId': teacher_id,
             'subject': subject,
             'topic': topic,
-            'conceptTag': ai_tag # Categorization for Admin Dashboard
+            'text': payload.text,
+            'normalized': payload.text.strip().lower(),
+            'type': payload.questionType,
+            'count': 1,
+            'isActive': True,
+            'conceptTag': ai_tag,
+            'timestamp': google_firestore.SERVER_TIMESTAMP # 🔥 Using true Firestore Timestamps
         }
         if payload.computeMode != 'tfidf':
             new_q['embedding'] = new_emb
 
         questions_ref.add(new_q)
-        print(f"🆕 Added New Question in {ai_tag}: {payload.text}")
+        print(f"🆕 Added New Question [{ai_tag}]: {payload.text}")
 
     return {
         "success": True, 
-        "message": f"Question {'merged' if merged else 'added'} successfully."
+        "message": "Feedback recorded."
     }

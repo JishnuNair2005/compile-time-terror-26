@@ -18,25 +18,11 @@ import {
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { doc, onSnapshot } from 'firebase/firestore'; // 🔥 Added for real-time bouncer
+import { doc, onSnapshot } from 'firebase/firestore'; 
 import { db } from '../services/firebase';
 
 const { width } = Dimensions.get('window');
-const API_URL = 'http://192.168.104.109:8000/api/questions';
-
-// --- UTILITY FUNCTIONS ---
-const fetchWithTimeout = (url, options = {}, timeout = 5000) => {
-  return Promise.race([
-    fetch(url, options),
-    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), timeout))
-  ]);
-};
-
-const formatTime = (seconds) => {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins < 10 ? '0' : ''}${mins} : ${secs < 10 ? '0' : ''}${secs}`;
-};
+const API_URL = 'http://192.168.1.2:8000/api/questions';
 
 export default function UserScreen() {
   // --- STATE MANAGEMENT ---
@@ -50,7 +36,11 @@ export default function UserScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [isOfflineMode] = useState(false);
-  const [currentSubject, setCurrentSubject] = useState("General"); // 🔥 Added for spam tracking
+  
+  // 🔥 NEW: Storing full class metadata for the new schema payload
+  const [currentSubject, setCurrentSubject] = useState("General"); 
+  const [currentTopic, setCurrentTopic] = useState("Unspecified");
+  const [currentTeacherId, setCurrentTeacherId] = useState("unknown");
 
   const [timeLeft, setTimeLeft] = useState(0);
   const [customAlert, setCustomAlert] = useState({ visible: false, message: '', type: 'info' });
@@ -65,70 +55,64 @@ export default function UserScreen() {
   const slideAnim = useRef(new Animated.Value(-100)).current;
   const hasScanned = useRef(false);
 
-  // --- INITIALIZATION (Device ID & Web URL Params) ---
+  // --- INITIALIZATION ---
   useEffect(() => {
     const initApp = async () => {
-      // 1. Setup Device ID
       let id = await AsyncStorage.getItem("deviceId");
       if (!id) {
         id = "device_" + Math.random().toString(36).substring(2, 12);
         await AsyncStorage.setItem("deviceId", id);
       }
       setDeviceId(id);
-
-      // 2. Check for Web Deep-Link (e.g., ?code=1234)
-      if (Platform.OS === 'web') {
-        try {
-          const params = new URLSearchParams(window.location.search);
-          const urlCode = params.get('code');
-          if (urlCode && urlCode.length === 4) {
-            setCode(urlCode.split(''));
-            verifyAndJoin(urlCode, true);
-          }
-        } catch (e) {
-          console.log("Error parsing URL parameters:", e);
-        }
-      }
     };
     initApp();
   }, []);
 
-  // --- TIMER LOGIC ---
-  // --- NEW FUNCTION: Ping backend to reduce the counter ---
-  const decrementBackendCounter = async (statusToClear) => {
-    if (!statusToClear) return;
-    
-    // Map the string status back to the integer the backend expects
-    const qType = statusToClear === 'clear' ? 2 : statusToClear === 'lost' ? 1 : 0;
+  // 🔥 NEW: Real-Time Bouncer (Kicks student out if teacher ends session)
+  useEffect(() => {
+    let unsub = null;
     const sessionCode = code.join('');
 
-    try {
-      const decrementUrl = API_URL.replace('/questions', `/sessions/${sessionCode}/decrement`);
-      await fetch(decrementUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ questionType: qType })
+    if (isJoined && sessionCode.length === 4) {
+      unsub = onSnapshot(doc(db, "sessions", sessionCode), (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.isActive === false) {
+            showCustomAlert("Session ended by teacher", "info");
+            forceLeaveSession();
+          }
+        } else {
+          // If document was deleted somehow
+          forceLeaveSession();
+        }
       });
-      console.log(`Successfully decremented ${statusToClear}`);
-    } catch (e) {
-      console.log("Failed to decrement counter", e);
     }
-  };
 
-  // --- UPDATED TIMER LOGIC ---
-useEffect(() => {
+    return () => {
+      if (unsub) unsub();
+    };
+  }, [isJoined, code]);
+
+  // --- TIMER LOGIC ---
+  useEffect(() => {
     if (timeLeft > 0) {
       timerRef.current = setInterval(() => {
         setTimeLeft((prev) => prev - 1);
-      }, 1);
+      }, 1000); // Fixed from 1ms to 1000ms (1 second)
     } else if (timeLeft === 0 && isLocked) {
       setIsLocked(false);
-      setStatus(null); // Resets the UI buttons
-      setConfusion(''); // Clears the text box
+      setStatus(null); 
+      setConfusion(''); 
       showCustomAlert("Poll reopened. You can vote again.", "info");
     }
     return () => clearInterval(timerRef.current);
   }, [timeLeft, isLocked]);
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins < 10 ? '0' : ''}${mins} : ${secs < 10 ? '0' : ''}${secs}`;
+  };
 
   // --- ALERT SYSTEM ---
   const showCustomAlert = (message, type = 'info') => {
@@ -158,7 +142,6 @@ useEffect(() => {
   };
   const alertTheme = getAlertIcon();
 
-  // --- CORE LOGIC ---
   const handleCodeChange = (text, index) => {
     const newCode = [...code];
     newCode[index] = text;
@@ -166,12 +149,11 @@ useEffect(() => {
     if (text && index < 3) inputRefs[index + 1].current.focus();
   };
 
-  // --- CONSOLIDATED JOIN LOGIC (POST REQUEST) ---
+  // --- JOIN LOGIC ---
   const verifyAndJoin = async (sessionCodeToVerify, isBackground = false) => {
     if (!isBackground) setIsVerifying(true);
     
     try {
-      // Pointing to the correct POST endpoint to increment totalJoined
       const joinUrl = API_URL.replace('/questions', `/sessions/${sessionCodeToVerify}/join`);
       
       const fetchWithTimeout = (url, options = {}, timeout = 5000) => {
@@ -184,25 +166,24 @@ useEffect(() => {
       const response = await fetchWithTimeout(joinUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        // 🔥 FIX: You MUST send the deviceId here so Python can read it!
         body: JSON.stringify({ deviceId: deviceId }) 
       });
       
       const data = await response.json();
 
       if (response.ok && data.valid) {
-        // Save for persistence
         await AsyncStorage.setItem("activeSessionCode", sessionCodeToVerify);
-        if (data.subject) {
-          setCurrentSubject(data.subject);
-          await AsyncStorage.setItem("activeSubject", data.subject);
-        }
+        
+        // 🔥 UPDATE: Save the full metadata returned from your Python backend
+        if (data.subject) setCurrentSubject(data.subject);
+        if (data.topic) setCurrentTopic(data.topic);
+        if (data.teacherId) setCurrentTeacherId(data.teacherId);
 
         showCustomAlert(`Joined Session ${sessionCodeToVerify}`, "success");
         setIsJoined(true);
       } else {
         showCustomAlert("Invalid Session Code", "error");
-        if (isBackground) setIsJoined(false); // kick back out if scanned code was bad
+        if (isBackground) setIsJoined(false); 
         setCode(['', '', '', '']);
         if (inputRefs[0].current) inputRefs[0].current.focus();
       }
@@ -223,57 +204,68 @@ useEffect(() => {
     verifyAndJoin(sessionCode, false);
   };
 
+  const forceLeaveSession = async () => {
+    await AsyncStorage.removeItem("activeSessionCode");
+    setIsJoined(false);
+    setCode(['', '', '', '']);
+    setStatus(null);
+    setConfusion('');
+    setIsLocked(false);
+    setTimeLeft(0);
+  };
+
   const leaveSession = async () => {
     Alert.alert("Leave Session", "Are you sure you want to exit?", [
       { text: "Cancel", style: "cancel" },
-      { 
-        text: "Leave", 
-        onPress: async () => {
-          await AsyncStorage.removeItem("activeSessionCode");
-          await AsyncStorage.removeItem("activeSubject");
-          setIsJoined(false);
-          setCode(['', '', '', '']);
-        } 
-      }
+      { text: "Leave", onPress: forceLeaveSession }
     ]);
   };
 
-  const openScanner = async () => {
-    if (!permission?.granted) {
-      const { granted } = await requestPermission();
-      if (!granted) {
-        showCustomAlert("Camera permission required", "error");
-        return;
-      }
+  // --- SUBMIT QUESTION ---
+  const submitQuestionToBackend = async (overrideStatus = null) => {
+    const currentStatus = overrideStatus || status;
+    if (currentStatus === 'lost' && !confusion.trim()) {
+      showCustomAlert("Description required for 'Lost'", "error");
+      return;
     }
-    setIsScanning(true);
-  };
 
-  const handleBarCodeScanned = ({ data }) => {
-    if (hasScanned.current) return; 
-    hasScanned.current = true;
-    setIsScanning(false);
+    const currentQType = currentStatus === 'clear' ? 2 : currentStatus === 'sort-of' ? 0 : 1;
 
-    if (data.startsWith('http://') || data.startsWith('https://')) {
-      Linking.openURL(data).catch(() => {
-        showCustomAlert("Could not open the website link", "error");
+    setIsSubmitting(true);
+    try {
+      // 🔥 UPDATE: Enhanced payload exactly matching the schema requirements
+      const payload = {
+        sessionId: code.join(''),
+        deviceId: deviceId || "temp_" + Math.random().toString(36).substring(2, 12),
+        teacherId: currentTeacherId,
+        subject: currentSubject,
+        topic: currentTopic,
+        text: currentStatus === 'clear' ? "" : confusion.trim(),
+        questionType: currentQType, // Mapped to schema: 0 (Sort Of), 1 (Lost), 2 (Got It)
+        computeMode: isOfflineMode ? 'tfidf' : 'openai'
+      };
+
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
-    }
-    else if (data.length === 4 && !isNaN(data)) {
-      const scannedCode = data.split('');
-      setCode(scannedCode);
-      
-      // Instant UI Feedback while it verifies in the background
-      setIsJoined(true);
-      showCustomAlert("Joining session...", "info");
-      
-      verifyAndJoin(data, true);
-    }
-    else {
-      showCustomAlert("Unrecognized QR format", "error");
-    }
 
-    setTimeout(() => { hasScanned.current = false; }, 2000);
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        showCustomAlert("Feedback Sent!", "success");
+        setLastSubmittedStatus(currentStatus); 
+        setTimeLeft(90); 
+        setIsLocked(true);
+      } else {
+        showCustomAlert(data.message || "Rejected", "error");
+      }
+    } catch (e) {
+      showCustomAlert("Connection Error", "error");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleStatusPress = (selectedStatus) => {
@@ -296,66 +288,7 @@ useEffect(() => {
     );
   };
 
-  const submitQuestionToBackend = async (overrideStatus = null) => {
-    const currentStatus = overrideStatus || status;
-    if (currentStatus === 'lost' && !confusion.trim()) {
-      showCustomAlert("Description required for 'Lost'", "error");
-      return;
-    }
-
-    // Map string statuses to numbers for the backend
-    const currentQType = currentStatus === 'clear' ? 2 : currentStatus === 'lost' ? 1 : 0;
-    let prevQType = null;
-    
-    // If they voted before, figure out what number it was to pass to the backend
-    if (lastSubmittedStatus) {
-      prevQType = lastSubmittedStatus === 'clear' ? 2 : lastSubmittedStatus === 'lost' ? 1 : 0;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const payload = {
-        sessionId: code.join(''),
-        // 🔥 Guaranteed fallback completely prevents 422 Unprocessable Entity errors
-        deviceId: deviceId || "temp_" + Math.random().toString(36).substring(2, 12),   
-        text: currentStatus === 'clear' ? "" : confusion.trim(),
-        questionType: currentStatus === 'clear' ? 2 : currentStatus === 'lost' ? 1 : 0,
-        computeMode: isOfflineMode ? 'tfidf' : 'openai'
-      };
-
-      const fetchWithTimeout = (url, options = {}, timeout = 5000) => {
-        return Promise.race([
-          fetch(url, options),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("timeout")), timeout)
-          )
-        ]);
-      };
-
-      const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      }, 20000);
-
-      const data = await response.json();
-
-      if (response.ok && data.success) {
-        showCustomAlert("Feedback Sent!", "success");
-        setLastSubmittedStatus(currentStatus); // <--- Save THIS vote for next time!
-        setTimeLeft(90); 
-        setIsLocked(true);
-      } else {
-        showCustomAlert(data.message || "Rejected", "error");
-      }
-    } catch (e) {
-      showCustomAlert("Connection Error", "error");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // --- REUSABLE ALERT COMPONENT ---
+  // --- UI RENDERING ---
   const renderAlert = () => {
     if (!customAlert.visible) return null;
     return (
@@ -371,21 +304,6 @@ useEffect(() => {
   if (!isJoined) {
     return (
       <View style={styles.container}>
-        <Modal visible={isScanning} animationType="slide" transparent={false}>
-          <View style={styles.scannerContainer}>
-            <CameraView style={styles.camera} facing="back" onBarcodeScanned={isScanning ? handleBarCodeScanned : undefined} barcodeScannerSettings={{ barcodeTypes: ["qr"] }}>
-              <View style={styles.scannerOverlay}>
-                <TouchableOpacity style={styles.closeScannerBtn} onPress={() => setIsScanning(false)}>
-                  <Feather name="x" size={32} color="white" />
-                </TouchableOpacity>
-                <View style={styles.scannerTarget} />
-                <Text style={styles.scannerInstructions}>
-                  Point at the Teacher's QR Code
-                </Text>
-              </View>
-            </CameraView>
-          </View>
-        </Modal>
         {renderAlert()}
         <View style={styles.content}>
           <View style={styles.headerSection}>
@@ -402,10 +320,6 @@ useEffect(() => {
           <View style={styles.buttonGroup}>
             <TouchableOpacity style={styles.joinButton} onPress={onJoin} disabled={isVerifying}>
               {isVerifying ? <ActivityIndicator color="white" /> : <Text style={styles.joinButtonText}>JOIN CLASS</Text>}
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.qrButton} onPress={openScanner}>
-              <MaterialCommunityIcons name="qrcode-scan" color="#64748B" size={20} />
-              <Text style={styles.qrButtonText}>SCAN QR</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -463,7 +377,6 @@ useEffect(() => {
   );
 }
 
-// --- SUB-COMPONENTS ---
 function StatusCard({ label, title, color, icon, active, onPress, disabled, isMCI }) {
   return (
     <TouchableOpacity onPress={onPress} disabled={disabled} style={[styles.statusCard, { backgroundColor: color, opacity: active || !disabled ? 1 : 0.2 }]}>
@@ -475,71 +388,27 @@ function StatusCard({ label, title, color, icon, active, onPress, disabled, isMC
   );
 }
 
-// --- STYLES (Clean & Professional) ---
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
+  topNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: Platform.OS === 'ios' ? 60 : 40, paddingBottom: 15, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  navSessionText: { fontSize: 16, fontWeight: 'bold', color: '#1E293B' },
+  leaveIcon: { padding: 8, backgroundColor: '#F8FAFC', borderRadius: 12 },
+  
+  customAlertBox: { position: 'absolute', alignSelf: 'center', flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999, elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155', maxWidth: '90%' },
+  alertIconContainer: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  customAlertText: { color: 'white', fontWeight: '600', fontSize: 14, paddingRight: 8, flexShrink: 1 },
 
-  customAlertBox: { 
-    position: 'absolute', 
-    alignSelf: 'center', 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    paddingVertical: 12, 
-    paddingHorizontal: 16, 
-    borderRadius: 100, 
-    gap: 12, 
-    zIndex: 9999, 
-    elevation: 12, 
-    backgroundColor: '#1E293B', 
-    shadowColor: '#000', 
-    shadowOffset: { width: 0, height: 8 }, 
-    shadowOpacity: 0.2, 
-    shadowRadius: 12, 
-    borderWidth: 1, 
-    borderColor: '#334155',
-    maxWidth: '90%', 
-  },
-  alertIconContainer: { 
-    width: 28, 
-    height: 28, 
-    borderRadius: 14, 
-    justifyContent: 'center', 
-    alignItems: 'center' 
-  },
-  customAlertText: { 
-    color: 'white', 
-    fontWeight: '600', 
-    fontSize: 14, 
-    paddingRight: 8, 
-    flexShrink: 1, 
-  },
-
-  liveTimerContainer: {
-    backgroundColor: '#000066', 
-    borderRadius: 20,
-    padding: 24,
-    marginTop: 24,
-    shadowColor: '#000066', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 15, elevation: 8
-  },
+  liveTimerContainer: { backgroundColor: '#000066', borderRadius: 20, padding: 24, marginTop: 24, shadowColor: '#000066', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.25, shadowRadius: 15, elevation: 8 },
   liveTimerHeader: { color: '#A5B4FC', fontSize: 16, fontWeight: '700' },
   liveTimerSub: { color: '#94A3B8', fontSize: 14, lineHeight: 22, marginBottom: 24 },
-  timerInnerCard: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)', 
-    borderRadius: 16,
-    padding: 20,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.15)'
-  },
+  timerInnerCard: { backgroundColor: 'rgba(255, 255, 255, 0.1)', borderRadius: 16, padding: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255, 255, 255, 0.15)' },
   timerLabel: { color: '#A5B4FC', fontSize: 10, fontWeight: '800', letterSpacing: 1.5, marginBottom: 4 },
   timerValue: { color: 'white', fontSize: 38, fontWeight: '900', letterSpacing: 2 },
   liveIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#EF4444' },
   liveText: { color: 'white', fontSize: 10, fontWeight: '800', letterSpacing: 1 },
 
-  scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 100 },
+  scrollContent: { padding: 24, paddingTop: 30, paddingBottom: 100 },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   dashboardHeader: { fontSize: 14, fontWeight: '900', color: '#64748B', letterSpacing: 2 },
 
@@ -566,39 +435,4 @@ const styles = StyleSheet.create({
   buttonGroup: { gap: 16 },
   joinButton: { backgroundColor: '#000066', paddingVertical: 20, borderRadius: 16, alignItems: 'center', elevation: 5 },
   joinButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16, letterSpacing: 2 },
-
-  qrButton: { flexDirection: 'row', paddingVertical: 20, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#E2E8F0', gap: 10 },
-  qrButtonText: { color: '#64748B', fontWeight: 'bold', letterSpacing: 1.5 },
-
-  scannerContainer: { flex: 1, backgroundColor: 'black' },
-  camera: { flex: 1 },
-  scannerOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center'
-  },
-  closeScannerBtn: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
-    right: 24,
-    padding: 10,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 20
-  },
-  scannerTarget: {
-    width: 250,
-    height: 250,
-    borderWidth: 4,
-    borderColor: '#10B981',
-    backgroundColor: 'transparent',
-    borderRadius: 24,
-    marginBottom: 40
-  },
-  scannerInstructions: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: 'bold',
-    letterSpacing: 1
-  },
 });

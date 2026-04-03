@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { 
   View, 
   Text, 
@@ -7,9 +7,10 @@ import {
   FlatList, 
   StyleSheet, 
   ActivityIndicator,
-  Alert
+  Alert,
+  Keyboard
 } from "react-native";
-import { useFocusEffect } from '@react-navigation/native'; // 🔥 Added for dynamic reloading
+import { useFocusEffect } from '@react-navigation/native';
 import { db } from "../services/firebase";
 import { 
   collection, 
@@ -30,110 +31,131 @@ export default function CreateRoomScreen({ route, navigation }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   
-  // 🔥 NEW: State for grouped history and expanded folders
   const [groupedHistory, setGroupedHistory] = useState({});
   const [expandedSubjects, setExpandedSubjects] = useState({});
 
-  // 1. 🔥 Dynamic Fetch: Runs every time screen comes into focus
   useFocusEffect(
     useCallback(() => {
       fetchHistory();
-    }, [teacherName])
+    }, [teacherId])
   );
 
-  // 1. Fetch & Group Teacher's Session History
   const fetchHistory = async () => {
     setRefreshing(true);
     try {
       const q = query(
         collection(db, "sessions"),
-        where("teacherName", "==", teacherName) // Adjusted to teacherName based on your logic
+        where("teacherId", "==", teacherId) 
       );
 
       const snap = await getDocs(q);
       const sessions = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       
-      // Sort newest first
       sessions.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
       
-      // 🔥 GROUP SESSIONS BY SUBJECT
       const grouped = {};
       sessions.forEach(session => {
-        const subjName = session.subject || "Uncategorized";
+        const subjName = session.subject ? session.subject.trim() : "Uncategorized";
         if (!grouped[subjName]) {
           grouped[subjName] = [];
         }
         grouped[subjName].push(session);
       });
 
-      setGroupedHistory(grouped);
+      const sortedGrouped = Object.keys(grouped).sort().reduce((acc, key) => {
+        acc[key] = grouped[key];
+        return acc;
+      }, {});
+
+      setGroupedHistory(sortedGrouped);
     } catch (err) {
       console.error("History Fetch Error:", err);
+      Alert.alert("Error", "Could not load session history.");
     } finally {
       setRefreshing(false);
     }
   };
 
-  useEffect(() => {
-    fetchHistory();
-  }, [teacherName]);
-
-  // 🔥 Toggle Folder Open/Close
   const toggleSubject = (subjectName) => {
     setExpandedSubjects(prev => ({
       ...prev,
-      [subjectName]: !prev[subjectName] // Toggle boolean value
+      [subjectName]: !prev[subjectName]
     }));
   };
 
-  // 2. Create New Session Logic
+  // Helper function to determine the time slot
+  const getTimeSlot = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Morning";
+    if (hour < 17) return "Afternoon";
+    return "Evening";
+  };
+
+  // Helper function to get the current day of the week
+  const getDayOfWeek = () => {
+    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    return days[new Date().getDay()];
+  };
+
   const handleCreateSession = async () => {
     if (!subject.trim() || !topic.trim()) {
-      Alert.alert("Error", "Please enter both Subject and Topic");
+      Alert.alert("Missing Info", "Please enter both a Subject and a Topic.");
       return;
     }
 
+    Keyboard.dismiss();
     setLoading(true);
     const generatedId = Math.floor(1000 + Math.random() * 9000).toString();
 
     try {
+      // 🔥 1. The Core Class Metadata & Weekly Trends (Exactly as requested)
       const sessionData = {
         sessionId: generatedId,
-        teacherId: teacherName,
-        teacherName: teacherName,
+        isActive: true, 
         subject: subject.trim(),
         topic: topic.trim(),
+        teacherId: teacherId, 
+        teacherName: teacherName,
+        totalJoined: 0,
+        language: "English", // Defaulting to English, could be a dropdown later
+        dayOfWeek: getDayOfWeek(),
+        timeSlot: getTimeSlot(),
         createdAt: serverTimestamp(),
-        isActive: true,
-        totalJoined: 0
+        endedAt: null,
+        finalGotIt: 0,
+        finalLost: 0,
+        totalQuestionsAsked: 0,
+        aiSummaryCache: null
       };
 
-      // Add to 'sessions' collection
       await setDoc(doc(collection(db, "sessions"), generatedId), sessionData);
+      
+      // 🔥 2. The Real-Time Progress Bar & Timeline (Exactly as requested)
       await setDoc(doc(db, "responses", generatedId), {
+        sessionId: generatedId,
         gotIt: 0,
         sortOf: 0,
         lost: 0,
-        sessionId: generatedId
+        lastActiveAt: serverTimestamp(),
+        timeline: [] 
       });
 
-      console.log("✅ Session & Responses created!");
+      console.log("✅ Session & Advanced Responses created successfully!");
       
-      // Reset inputs
       setSubject("");
       setTopic("");
       
       navigation.navigate("Admin", { 
         sessionId: generatedId, 
-        subject: subject.trim(), 
-        topic: topic.trim(),
-        teacherId: teacherName,
+        subject: sessionData.subject, 
+        topic: sessionData.topic,
+        teacherId: teacherId,
         teacherName: teacherName 
       });
 
     } catch (err) {
       console.error("Create Session Error:", err);
-      Alert.alert("Error", "Failed to create session");
+      Alert.alert("Error", "Failed to create session. Please check your connection.");
     } finally {
       setLoading(false);
     }
@@ -141,42 +163,43 @@ export default function CreateRoomScreen({ route, navigation }) {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header Section */}
       <View style={styles.header}>
         <Text style={styles.welcomeText}>Hello, Prof. {teacherName}</Text>
         <Text style={styles.subText}>Ready for a new lecture?</Text>
       </View>
 
-      {/* Create Room Card */}
       <View style={styles.createCard}>
         <Text style={styles.cardTitle}>Create New Room</Text>
         
         <View style={styles.inputGroup}>
           <Feather name="book" size={18} color="#64748B" style={styles.inputIcon} />
           <TextInput
-            placeholder="Subject (e.g. Operating Systems)"
+            placeholder="Subject (e.g. Java , Maths)"
             value={subject}
             onChangeText={setSubject}
             style={styles.input}
             placeholderTextColor="#94A3B8"
+            autoCapitalize="words"
           />
         </View>
 
         <View style={styles.inputGroup}>
           <Feather name="edit-3" size={18} color="#64748B" style={styles.inputIcon} />
           <TextInput
-            placeholder="Topic (e.g. Process Scheduling)"
+            placeholder="Topic (e.g. OOPS , Geometry)"
             value={topic}
             onChangeText={setTopic}
             style={styles.input}
             placeholderTextColor="#94A3B8"
+            autoCapitalize="words"
           />
         </View>
 
         <TouchableOpacity 
-          style={styles.createBtn} 
+          style={[styles.createBtn, loading && styles.createBtnDisabled]} 
           onPress={handleCreateSession}
           disabled={loading}
+          activeOpacity={0.8}
         >
           {loading ? <ActivityIndicator color="white" /> : (
             <>
@@ -187,17 +210,15 @@ export default function CreateRoomScreen({ route, navigation }) {
         </TouchableOpacity>
       </View>
 
-      {/* History Header */}
       <View style={styles.historyHeader}>
         <Text style={styles.historyTitle}>Your Previous Sessions</Text>
-        <TouchableOpacity onPress={fetchHistory}>
-          <Feather name="refresh-cw" size={16} color="#000066" />
+        <TouchableOpacity onPress={fetchHistory} style={{ padding: 4 }}>
+          <Feather name="refresh-cw" size={18} color="#000066" />
         </TouchableOpacity>
       </View>
 
-      {/* 🔥 GROUPED FOLDER LIST */}
       <FlatList
-        data={Object.entries(groupedHistory)} // Converts object to array of [subjectName, sessionsArray]
+        data={Object.entries(groupedHistory)}
         keyExtractor={(item) => item[0]}
         refreshing={refreshing}
         onRefresh={fetchHistory}
@@ -210,10 +231,10 @@ export default function CreateRoomScreen({ route, navigation }) {
 
           return (
             <View style={styles.folderContainer}>
-              {/* Folder Header */}
               <TouchableOpacity 
                 style={[styles.folderHeader, isExpanded && styles.folderHeaderActive]} 
                 onPress={() => toggleSubject(subjectName)}
+                activeOpacity={0.7}
               >
                 <View style={styles.folderLeft}>
                   <Feather name={isExpanded ? "folder-minus" : "folder"} size={20} color={isExpanded ? "#000066" : "#64748B"} />
@@ -224,18 +245,18 @@ export default function CreateRoomScreen({ route, navigation }) {
                 <Feather name={isExpanded ? "chevron-down" : "chevron-right"} size={20} color="#64748B" />
               </TouchableOpacity>
 
-              {/* Expanded Sessions List */}
               {isExpanded && (
                 <View style={styles.expandedContent}>
                   {sessionsList.map((session) => (
                     <TouchableOpacity 
                       key={session.id}
                       style={styles.sessionItem}
+                      activeOpacity={0.7}
                       onPress={() => navigation.navigate("Admin", { 
                         sessionId: session.sessionId, 
                         subject: session.subject, 
                         topic: session.topic,
-                        teacherId: teacherName,
+                        teacherId: teacherId,
                         teacherName: teacherName
                       })}
                     >
@@ -244,7 +265,9 @@ export default function CreateRoomScreen({ route, navigation }) {
                           {session.topic}
                         </Text>
                         <Text style={styles.sessionDate}>
-                          {session.createdAt ? new Date(session.createdAt.seconds * 1000).toLocaleDateString() : 'Just now'}
+                          {session.createdAt 
+                            ? new Date(session.createdAt.seconds * 1000).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) 
+                            : 'Just now'}
                         </Text>
                       </View>
                       <View style={styles.sessionBadge}>
@@ -258,7 +281,9 @@ export default function CreateRoomScreen({ route, navigation }) {
           );
         }}
         ListEmptyComponent={
-          <Text style={styles.emptyText}>No sessions found. Create your first one above!</Text>
+          !loading && !refreshing ? (
+            <Text style={styles.emptyText}>No sessions found. Create your first one above!</Text>
+          ) : null
         }
       />
     </SafeAreaView>
@@ -270,32 +295,31 @@ const styles = StyleSheet.create({
   header: { marginBottom: 30 },
   welcomeText: { fontSize: 24, fontWeight: "900", color: "#000066" },
   subText: { fontSize: 14, color: "#64748B", marginTop: 4 },
-  createCard: { backgroundColor: "white", padding: 20, borderRadius: 20, elevation: 4, marginBottom: 30 },
+  createCard: { backgroundColor: "white", padding: 20, borderRadius: 20, elevation: 4, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, marginBottom: 30 },
   cardTitle: { fontSize: 16, fontWeight: "bold", marginBottom: 20, color: "#1E293B" },
   inputGroup: { flexDirection: "row", alignItems: "center", backgroundColor: "#F1F5F9", borderRadius: 12, paddingHorizontal: 15, marginBottom: 15 },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, height: 50, fontSize: 14, color: "#1E293B" },
-  createBtn: { backgroundColor: "#2569d8ff", height: 55, borderRadius: 12, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 10 },
+  createBtn: { backgroundColor: "#2569d8", height: 55, borderRadius: 12, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: 10 },
+  createBtnDisabled: { opacity: 0.7 },
   createBtnText: { color: "white", fontWeight: "900", letterSpacing: 1 },
   historyHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 },
   historyTitle: { fontSize: 18, fontWeight: "bold", color: "#1E293B" },
-  emptyText: { textAlign: "center", color: "#94A3B8", marginTop: 20 },
+  emptyText: { textAlign: "center", color: "#94A3B8", marginTop: 40, fontStyle: "italic" },
 
-  // 🔥 FOLDER STYLES
   folderContainer: { marginBottom: 12 },
   folderHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", padding: 18, borderRadius: 16, borderWidth: 1, borderColor: "#E2E8F0" },
-  folderHeaderActive: { borderColor: "#000066", backgroundColor: "#F1F5F9" },
+  folderHeaderActive: { borderColor: "#000066", backgroundColor: "#F8FAFC" },
   folderLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
   folderTitle: { fontSize: 16, fontWeight: "bold", color: "#334155" },
   folderTitleActive: { color: "#000066" },
   folderCount: { fontSize: 14, color: "#94A3B8", fontWeight: "normal" },
   
-  // Session Items Inside Folders
   expandedContent: { marginTop: 8, gap: 8, paddingLeft: 12 },
-  sessionItem: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0", borderLeftWidth: 4, borderLeftColor: "#2569d8ff" },
+  sessionItem: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "white", padding: 16, borderRadius: 12, borderWidth: 1, borderColor: "#E2E8F0", borderLeftWidth: 4, borderLeftColor: "#2569d8" },
   sessionInfo: { flex: 1, paddingRight: 10 },
   sessionTopic: { fontSize: 15, fontWeight: "bold", color: "#1E293B" },
-  sessionDate: { fontSize: 12, color: "#64748B", marginTop: 4 },
+  sessionDate: { fontSize: 12, color: "#64748B", marginTop: 6 },
   sessionBadge: { backgroundColor: "#E0E7FF", paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
-  sessionCode: { color: "#0b275bff", fontWeight: "bold", fontSize: 14, letterSpacing: 1 }
+  sessionCode: { color: "#0b275b", fontWeight: "bold", fontSize: 14, letterSpacing: 1 }
 });

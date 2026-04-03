@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   View,
   Text,
@@ -9,7 +9,9 @@ import {
   Image,
   Animated,
   ActivityIndicator,
-  Alert
+  Alert,
+  Platform,
+  Vibration // 🔥 Add this!
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
@@ -18,7 +20,9 @@ import {
   query,
   where,
   doc,
-  updateDoc
+  updateDoc,
+  getDoc,
+  serverTimestamp
 } from "firebase/firestore";
 import { db } from "../services/firebase";
 import {
@@ -26,6 +30,7 @@ import {
   MaterialCommunityIcons,
   Ionicons
 } from "@expo/vector-icons";
+import { LinearGradient } from 'expo-linear-gradient';
 
 const { width } = Dimensions.get("window");
 
@@ -40,37 +45,68 @@ export default function TeacherDashboard({ route, navigation }) {
   
   const sId = String(sessionId);
 
-  // App Stages: "setup" -> "active" -> "summary"
   const [appStage, setAppStage] = useState("setup"); 
-  
-  // UI States
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [questions, setQuestions] = useState({}); // 🔥 State is Object for Concept Grouping
+  const [questions, setQuestions] = useState({}); 
   const [stats, setStats] = useState({ gotIt: 0, sortOf: 0, lost: 0, total: 0, raw: { gotIt: 0, sortOf: 0, lost: 0 } });
   
-  // State for real-time student count
   const [connectedCount, setConnectedCount] = useState(0);
   const [isDbSessionActive, setIsDbSessionActive] = useState(true); 
   const [isOfflineMode] = useState(false); 
 
-  // Summary States
   const [finalSummary, setFinalSummary] = useState(null);
   const [loadingSummary, setLoadingSummary] = useState(false);
 
-  // --- Real-time Listeners ---
+  // --- CUSTOM ALERT STATES ---
+  const [customAlert, setCustomAlert] = useState({ visible: false, message: '', type: 'info' });
+  const slideAnim = useRef(new Animated.Value(-100)).current;
+
+  // 🔥 NEW: Tracks if the emergency has already triggered so it doesn't spam the buzzer
+  const hasTriggeredEmergency = useRef(false);
+
+  const showCustomAlert = (message, type = 'info') => {
+    setCustomAlert({ visible: true, message, type });
+    Animated.spring(slideAnim, {
+      toValue: Platform.OS === 'ios' ? 60 : 40,
+      useNativeDriver: true,
+      tension: 60,
+      friction: 10
+    }).start();
+
+    setTimeout(() => {
+      Animated.timing(slideAnim, {
+        toValue: -100,
+        duration: 400,
+        useNativeDriver: true,
+      }).start(() => setCustomAlert({ visible: false, message: '', type: 'info' }));
+    }, 3500);
+  };
+
+  const getAlertIcon = () => {
+    switch (customAlert.type) {
+      case 'success': return { name: 'check', color: '#10B981', bg: 'rgba(16, 185, 129, 0.15)' };
+      case 'error': return { name: 'x', color: '#EF4444', bg: 'rgba(239, 68, 68, 0.15)' };
+      default: return { name: 'info', color: '#3B82F6', bg: 'rgba(59, 130, 246, 0.15)' };
+    }
+  };
+  const alertTheme = getAlertIcon();
+
+  // --- REAL-TIME LISTENERS ---
   useEffect(() => {
     if (!sId) return;
 
-    // 1. Session Metadata & Attendance
     const unsubSession = onSnapshot(doc(db, "sessions", sId), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setConnectedCount(data.totalJoined || 0); 
         setIsDbSessionActive(data.isActive === true); 
+        
+        if (data.isActive === false && appStage === "setup") {
+            setAppStage("summary");
+        }
       }
     });
 
-    // 2. Concept-based Live Questions Logic
     const qQuestions = query(
       collection(db, "questions"),
       where("sessionId", "==", sId),
@@ -80,7 +116,6 @@ export default function TeacherDashboard({ route, navigation }) {
     const unsubQuestions = onSnapshot(qQuestions, (snapshot) => {
       let data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
       
-      // 🔥 Logic: Group questions by conceptTag provided by Llama
       const grouped = {};
       data.forEach(q => {
         const concept = q.conceptTag || "General Clarification";
@@ -90,7 +125,6 @@ export default function TeacherDashboard({ route, navigation }) {
         grouped[concept].push(q);
       });
 
-      // Sort questions within each concept by count/priority
       Object.keys(grouped).forEach(key => {
         grouped[key].sort((a, b) => (b.type === 1 ? 1 : -1) || (b.count || 1) - (a.count || 1));
       });
@@ -98,11 +132,12 @@ export default function TeacherDashboard({ route, navigation }) {
       setQuestions(grouped);
     });
 
-    // 3. Signal Stats (Got It/Lost Bars)
     const unsubStats = onSnapshot(doc(db, "responses", sId), (docSnap) => {
       if (docSnap.exists()) {
         const d = docSnap.data();
         const total = (d.gotIt || 0) + (d.sortOf || 0) + (d.lost || 0) || 1;
+        
+        // Update your UI stats
         setStats({
           gotIt: Math.round(((d.gotIt || 0) / total) * 100),
           sortOf: Math.round(((d.sortOf || 0) / total) * 100),
@@ -110,6 +145,23 @@ export default function TeacherDashboard({ route, navigation }) {
           total: (d.gotIt || 0) + (d.sortOf || 0) + (d.lost || 0),
           raw: d
         });
+
+        // 🔥 THE EMERGENCY BUZZER LOGIC
+        if (d.emergencyAlert === true && hasTriggeredEmergency.current === false) {
+          // 1. Show the visual alert on screen
+          showCustomAlert("⚠️ CRITICAL: High confusion detected! Pause to recap.", "error");
+          
+          // 2. Trigger the physical buzz! 
+          // Pattern: [Wait 0ms, Buzz 500ms, Wait 200ms, Buzz 500ms]
+          Vibration.vibrate([0, 500, 200, 500]); 
+          
+          // 3. Lock it so it doesn't buzz every time a new student votes
+          hasTriggeredEmergency.current = true; 
+        } 
+        else if (d.emergencyAlert === false && hasTriggeredEmergency.current === true) {
+          // 4. The class calmed down (backend removed the flag). Unlock the buzzer for the future.
+          hasTriggeredEmergency.current = false;
+        }
       }
     });
 
@@ -118,60 +170,145 @@ export default function TeacherDashboard({ route, navigation }) {
       unsubQuestions();
       unsubStats();
     };
-  }, [sId]);
+  }, [sId, appStage]);
 
-  // Handle stage transition when session ends
   useEffect(() => {
     if (!isDbSessionActive && appStage === "active") {
       setAppStage("summary");
-      // Safely check if finalSummary is null
       if (!isOfflineMode && !finalSummary) { 
         handleGetSummary();
       }
     }
   }, [isDbSessionActive, appStage, isOfflineMode, finalSummary]);
 
-  // --- Actions ---
+  // --- 🔥 LIVE SUMMARY GENERATOR ENGINE ---
+  const getLiveSummary = () => {
+    if (stats.total === 0) return { text: "Waiting for student responses...", color: "#64748B", gradient: ['#F1F5F9', '#F8FAFC'] };
+
+    // 1. Find the concept causing the most confusion
+    let topConcept = null;
+    let maxCount = 0;
+    
+    Object.entries(questions).forEach(([concept, qArray]) => {
+      const conceptCount = qArray.reduce((sum, q) => sum + (q.count || 1), 0);
+      if (conceptCount > maxCount) {
+        maxCount = conceptCount;
+        topConcept = concept;
+      }
+    });
+
+    // 2. Determine sentiment based on real-time stats
+    const lostPercent = stats.lost;
+    const gotItPercent = stats.gotIt;
+
+    if (lostPercent > 40) {
+      const extra = topConcept ? ` They are mostly struggling with "${topConcept}".` : " General recap recommended.";
+      return { 
+        text: `High confusion detected!${extra}`, 
+        color: "#EF4444",
+        icon: "alert-triangle",
+        gradient: ['#FEF2F2', '#FEE2E2']
+      };
+    } else if (lostPercent > 20) {
+      const extra = topConcept ? ` Keep an eye on "${topConcept}".` : " Proceed with slight caution.";
+      return { 
+        text: `Class pace is okay, but some students are slipping.${extra}`, 
+        color: "#F59E0B",
+        icon: "activity",
+        gradient: ['#FFFBEB', '#FEF3C7']
+      };
+    } else if (gotItPercent > 70) {
+      const extra = topConcept ? ` A few minor doubts on "${topConcept}", but otherwise perfect.` : " They are tracking perfectly!";
+      return { 
+        text: `Excellent momentum!${extra}`, 
+        color: "#10B981",
+        icon: "trending-up",
+        gradient: ['#ECFDF5', '#D1FAE5']
+      };
+    } else {
+      const extra = topConcept ? ` Main bottleneck seems to be "${topConcept}".` : " Keep explaining the core concept.";
+      return { 
+        text: `Mixed responses in the room.${extra}`, 
+        color: "#3B82F6",
+        icon: "radio",
+        gradient: ['#EFF6FF', '#DBEAFE']
+      };
+    }
+  };
+
+  const liveInsight = getLiveSummary();
+
+  // --- ACTIONS ---
   const handleEndSession = async () => {
-    // Ensure all questions are cleared before ending
     const hasActiveQuestions = Object.values(questions).some(arr => arr.length > 0);
     if (hasActiveQuestions) {
-      Alert.alert("Questions Pending", "Bhai, pehle saare student questions clear karo!");
+      showCustomAlert("Bhai, pehle saare student questions clear karo!", "error");
       return;
     }
     
     try {
-      await updateDoc(doc(db, "sessions", sId), { isActive: false });
+      await updateDoc(doc(db, "sessions", sId), { 
+        isActive: false,
+        endedAt: serverTimestamp(),
+        finalGotIt: stats.raw.gotIt || 0,
+        finalLost: stats.raw.lost || 0,
+        totalQuestionsAsked: 0 
+      });
+      showCustomAlert("Session Ended", "success");
     } catch (error) {
-      Alert.alert("Error", "Could not end session.");
+      showCustomAlert("Could not end session.", "error");
     }
   };
 
   const dismissQuestion = async (qId) => {
-    await updateDoc(doc(db, "questions", qId), { isActive: false });
+    try {
+      await updateDoc(doc(db, "questions", qId), { isActive: false });
+    } catch (error) {
+      showCustomAlert("Could not dismiss question.", "error");
+    }
   };
 
   const handleGetSummary = async () => {
     if (isOfflineMode) return;
     try {
       setLoadingSummary(true);
-      // 🔥 POINT THIS TO YOUR LOCAL PYTHON SERVER
-      const res = await fetch(`http://192.168.104.109:8000/api/sessions/${sId}/summary`);
       
+      const sessionRef = doc(db, "sessions", sId);
+      const sessionSnap = await getDoc(sessionRef);
+      
+      if (sessionSnap.exists() && sessionSnap.data().aiSummaryCache) {
+        setFinalSummary(sessionSnap.data().aiSummaryCache);
+        return; 
+      }
+
+      const res = await fetch(`http://192.168.104.109:8000/api/sessions/${sId}/summary`);
       const data = await res.json();
+      
       if (data.success) {
-        setFinalSummary(data.data || null); // Save the entire object
+        setFinalSummary(data.data || null);
+        await updateDoc(sessionRef, { aiSummaryCache: data.data });
       } else {
         throw new Error("Backend failed to return success");
       }
     } catch (err) {
-      console.error("❌ Summary Error:", err);
+      showCustomAlert("Could not generate AI summary at this time.", "error");
     } finally {
       setLoadingSummary(false);
     }
   };
 
   // --- UI RENDERERS ---
+  const renderAlert = () => {
+    if (!customAlert.visible) return null;
+    return (
+      <Animated.View style={[styles.customAlertBox, { transform: [{ translateY: slideAnim }] }]}>
+        <View style={[styles.alertIconContainer, { backgroundColor: alertTheme.bg }]}>
+          <Feather name={alertTheme.name} color={alertTheme.color} size={16} />
+        </View>
+        <Text style={styles.customAlertText}>{customAlert.message}</Text>
+      </Animated.View>
+    );
+  };
 
   const renderSetup = () => (
     <View style={styles.setupContainer}>
@@ -191,7 +328,10 @@ export default function TeacherDashboard({ route, navigation }) {
           <Text style={styles.briefTopic}>{topic}</Text>
         </View>
       </View>
-      <TouchableOpacity style={styles.primaryBtn} onPress={() => setAppStage("active")}>
+      <TouchableOpacity style={styles.primaryBtn} onPress={() => {
+        setAppStage("active");
+        showCustomAlert("Session Started! Waiting for students...", "success");
+      }}>
         <Ionicons name="play-circle" size={24} color="white" />
         <Text style={styles.primaryBtnText}>Start Live Session</Text>
       </TouchableOpacity>
@@ -205,7 +345,7 @@ export default function TeacherDashboard({ route, navigation }) {
   const renderActive = () => {
     const indicatorColor = isDbSessionActive ? '#10B981' : '#94A3B8';
     return (
-      <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }}>
+      <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 100 }} showsVerticalScrollIndicator={false}>
         {activeTab === "dashboard" ? (
           <>
             <View style={styles.headerRow}>
@@ -215,15 +355,25 @@ export default function TeacherDashboard({ route, navigation }) {
                 <Text style={[styles.liveText, { color: indicatorColor }]}>{isDbSessionActive ? `${connectedCount} ONLINE` : 'OFFLINE'}</Text>
               </View>
             </View>
+
+            {/* 🔥 NEW LIVE PULSE CHAT SUMMARY */}
+            <LinearGradient colors={liveInsight.gradient} style={styles.liveSummaryBox}>
+              <View style={styles.liveSummaryHeader}>
+                <MaterialCommunityIcons name="google-circles-extended" size={16} color={liveInsight.color} />
+                <Text style={[styles.liveSummaryTitle, { color: liveInsight.color }]}>LIVE PULSE SUMMARY</Text>
+              </View>
+              <View style={styles.liveSummaryContent}>
+                <Feather name={liveInsight.icon || 'activity'} size={24} color={liveInsight.color} style={{ marginRight: 12, marginTop: 2 }} />
+                <Text style={[styles.liveSummaryText, { color: '#1E293B' }]}>{liveInsight.text}</Text>
+              </View>
+            </LinearGradient>
+
             <View style={styles.statsCard}>
               <ProgressBar label={`Got it (${stats.raw.gotIt})`} value={stats.gotIt} color="#22C55E" />
               <ProgressBar label={`Sort of (${stats.raw.sortOf})`} value={stats.sortOf} color="#F59E0B" />
               <ProgressBar label={`Lost (${stats.raw.lost})`} value={stats.lost} color="#EF4444" />
-              <View style={[styles.aiInsightBox, { backgroundColor: stats.lost > 30 ? "#EF4444" : "#4338CA" }]}>
-                <MaterialCommunityIcons name="chart-bubble" size={20} color="white" />
-                <Text style={styles.aiInsightText}>{stats.lost > 30 ? "High confusion detected! Recap recommended." : "Class pace looks good!"}</Text>
-              </View>
             </View>
+
             <View style={styles.miniStatsRow}>
               <MiniStat label="ACTIVE QUESTIONS" value={Object.values(questions).flat().length} />
               <MiniStat label="SESSION ID" value={sId} />
@@ -312,6 +462,7 @@ export default function TeacherDashboard({ route, navigation }) {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      {renderAlert()}
       <View style={styles.navHeader}>
         <View style={styles.headerLeft}>
           <Feather name="radio" size={18} color={isDbSessionActive ? "#10B981" : "#94A3B8"} />
@@ -403,20 +554,26 @@ const styles = StyleSheet.create({
   sessionBrief: { marginTop: 24, alignItems: 'center' },
   briefSubject: { fontSize: 20, fontWeight: 'bold', color: '#1E293B', textAlign: 'center' },
   briefTopic: { fontSize: 16, color: '#64748B', textAlign: 'center', marginTop: 4 },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   mainTitle: { fontSize: 28, fontWeight: '900', color: '#1E293B' },
   topicTag: { fontSize: 14, color: '#6366F1', fontWeight: '700' },
   activeIndicator: { flexDirection: 'row', alignItems: 'center', gap: 6, padding: 8, borderRadius: 12 },
   pulseDot: { width: 8, height: 8, borderRadius: 4 },
   liveText: { fontWeight: 'bold', fontSize: 11 },
+  
+  // 🔥 NEW STYLES FOR LIVE PULSE SUMMARY
+  liveSummaryBox: { padding: 20, borderRadius: 20, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(0,0,0,0.03)', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 2 },
+  liveSummaryHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
+  liveSummaryTitle: { fontSize: 11, fontWeight: '900', letterSpacing: 1.5 },
+  liveSummaryContent: { flexDirection: 'row', alignItems: 'flex-start' },
+  liveSummaryText: { flex: 1, fontSize: 15, fontWeight: '600', lineHeight: 22 },
+
   statsCard: { backgroundColor: '#F8FAFC', borderRadius: 24, padding: 20, borderWidth: 1, borderColor: '#F1F5F9' },
   barHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   barLabel: { fontSize: 11, fontWeight: '900', color: '#64748B' },
   barValue: { fontSize: 16, fontWeight: '900' },
   barBg: { height: 12, backgroundColor: '#E2E8F0', borderRadius: 6 },
   barFill: { height: 12, borderRadius: 6 },
-  aiInsightBox: { flexDirection: 'row', padding: 18, borderRadius: 18, marginTop: 15, gap: 12 },
-  aiInsightText: { color: 'white', fontSize: 13, flex: 1, fontWeight: '600', lineHeight: 18 },
   sectionTitle: { fontSize: 22, fontWeight: '900', marginVertical: 20, color: '#1E293B' },
   questionCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'white', padding: 16, borderRadius: 20, marginBottom: 12, elevation: 2, borderLeftWidth: 6 },
   countBox: { width: 45, height: 45, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
@@ -429,19 +586,22 @@ const styles = StyleSheet.create({
   miniStatsRow: { flexDirection: 'row', gap: 15, marginTop: 25 },
   miniStatBox: { flex: 1, backgroundColor: '#F8FAFC', padding: 16, borderRadius: 20, borderWidth: 1, borderColor: '#F1F5F9' },
   miniStatLabel: { fontSize: 10, fontWeight: '900', color: '#94A3B8' },
-  miniStatValue: { fontSize: 18, fontWeight: '900', color: '#12348aff', marginTop: 4 },
-  primaryBtn: { backgroundColor: '#1d3ba8ff', flexDirection: 'row', padding: 20, borderRadius: 20, width: '90%', justifyContent: 'center', alignItems: 'center', gap: 10, elevation: 3 },
+  miniStatValue: { fontSize: 18, fontWeight: '900', color: '#12348a', marginTop: 4 },
+  primaryBtn: { backgroundColor: '#1d3ba8', flexDirection: 'row', padding: 20, borderRadius: 20, width: '90%', justifyContent: 'center', alignItems: 'center', gap: 10, elevation: 3 },
   primaryBtnText: { color: 'white', fontWeight: 'bold', fontSize: 18 },
   endBtn: { backgroundColor: '#FEF2F2', padding: 18, borderRadius: 18, marginTop: 40, alignItems: 'center', borderWidth: 1, borderColor: '#FCA5A5' },
   endBtnText: { color: '#EF4444', fontWeight: '900', fontSize: 16 },
   bottomNav: { position: 'absolute', bottom: 0, width: '100%', height: 85, backgroundColor: 'white', flexDirection: 'row', justifyContent: 'space-around', borderTopWidth: 1, borderTopColor: '#F1F5F9', paddingBottom: 20 },
   navTab: { alignItems: 'center', justifyContent: 'center' },
   navLabel: { fontSize: 11, fontWeight: 'bold', color: '#94A3B8', marginTop: 4 },
-  summaryTitle: { fontSize: 32, fontWeight: '900', marginTop: 20, color: '#071b56ff' },
+  summaryTitle: { fontSize: 32, fontWeight: '900', marginTop: 20, color: '#071b56' },
   summaryCard: { backgroundColor: '#F8FAFC', padding: 20, borderRadius: 15, width: '90%', marginVertical: 10, borderWidth: 1, borderColor: '#E2E8F0' },
   summaryLabel: { fontSize: 16, fontWeight: 'bold', color: '#1E293B' },
   summaryValues: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
   conceptHeader: { backgroundColor: '#E0E7FF', padding: 10, borderRadius: 10, marginBottom: 12 },
-  conceptTitle: { fontSize: 12, fontWeight: '900', color: '#244cdeff', letterSpacing: 1 },
-  horizontalLine: { height: 1, backgroundColor: '#E2E8F0', marginVertical: 15 }
+  conceptTitle: { fontSize: 12, fontWeight: '900', color: '#244cde', letterSpacing: 1 },
+  horizontalLine: { height: 1, backgroundColor: '#E2E8F0', marginVertical: 15 },
+  customAlertBox: { position: 'absolute', top: 0, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999, elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155', maxWidth: '90%' },
+  alertIconContainer: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
+  customAlertText: { color: 'white', fontWeight: '600', fontSize: 14, paddingRight: 8, flexShrink: 1 },
 });
