@@ -28,6 +28,7 @@ export default function CreateRoomScreen({ route, navigation }) {
   const { teacherId, teacherName } = route.params;
   const [subject, setSubject] = useState("");
   const [topic, setTopic] = useState("");
+  const [duration, setDuration] = useState("60"); // 🔥 NEW: Default 60 minutes
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   
@@ -83,7 +84,6 @@ export default function CreateRoomScreen({ route, navigation }) {
     }));
   };
 
-  // Helper function to determine the time slot
   const getTimeSlot = () => {
     const hour = new Date().getHours();
     if (hour < 12) return "Morning";
@@ -91,7 +91,6 @@ export default function CreateRoomScreen({ route, navigation }) {
     return "Evening";
   };
 
-  // Helper function to get the current day of the week
   const getDayOfWeek = () => {
     const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     return days[new Date().getDay()];
@@ -103,12 +102,21 @@ export default function CreateRoomScreen({ route, navigation }) {
       return;
     }
 
+    // 🔥 NEW: Validate duration
+    const durationNum = parseInt(duration);
+    if (isNaN(durationNum) || durationNum <= 0) {
+      Alert.alert("Invalid Time", "Please enter a valid number of minutes.");
+      return;
+    }
+
     Keyboard.dismiss();
     setLoading(true);
     const generatedId = Math.floor(1000 + Math.random() * 9000).toString();
 
     try {
-      // 🔥 1. The Core Class Metadata & Weekly Trends (Exactly as requested)
+      // 🔥 NEW: Calculate exact millisecond it expires
+      const expirationTime = Date.now() + (durationNum * 60 * 1000);
+
       const sessionData = {
         sessionId: generatedId,
         isActive: true, 
@@ -117,10 +125,11 @@ export default function CreateRoomScreen({ route, navigation }) {
         teacherId: teacherId, 
         teacherName: teacherName,
         totalJoined: 0,
-        language: "English", // Defaulting to English, could be a dropdown later
+        language: "English", 
         dayOfWeek: getDayOfWeek(),
         timeSlot: getTimeSlot(),
         createdAt: serverTimestamp(),
+        expiresAt: expirationTime, // 🔥 NEW: Saved to database
         endedAt: null,
         finalGotIt: 0,
         finalLost: 0,
@@ -130,7 +139,6 @@ export default function CreateRoomScreen({ route, navigation }) {
 
       await setDoc(doc(collection(db, "sessions"), generatedId), sessionData);
       
-      // 🔥 2. The Real-Time Progress Bar & Timeline (Exactly as requested)
       await setDoc(doc(db, "responses", generatedId), {
         sessionId: generatedId,
         gotIt: 0,
@@ -144,13 +152,15 @@ export default function CreateRoomScreen({ route, navigation }) {
       
       setSubject("");
       setTopic("");
+      setDuration("60"); // Reset
       
       navigation.navigate("Admin", { 
         sessionId: generatedId, 
         subject: sessionData.subject, 
         topic: sessionData.topic,
         teacherId: teacherId,
-        teacherName: teacherName 
+        teacherName: teacherName,
+        expiresAt: expirationTime // Pass it to the next screen!
       });
 
     } catch (err) {
@@ -174,7 +184,7 @@ export default function CreateRoomScreen({ route, navigation }) {
         <View style={styles.inputGroup}>
           <Feather name="book" size={18} color="#64748B" style={styles.inputIcon} />
           <TextInput
-            placeholder="Subject (e.g. Java , Maths)"
+            placeholder="Subject (e.g. Java, Maths)"
             value={subject}
             onChangeText={setSubject}
             style={styles.input}
@@ -186,12 +196,25 @@ export default function CreateRoomScreen({ route, navigation }) {
         <View style={styles.inputGroup}>
           <Feather name="edit-3" size={18} color="#64748B" style={styles.inputIcon} />
           <TextInput
-            placeholder="Topic (e.g. OOPS , Geometry)"
+            placeholder="Topic (e.g. OOPS, Geometry)"
             value={topic}
             onChangeText={setTopic}
             style={styles.input}
             placeholderTextColor="#94A3B8"
             autoCapitalize="words"
+          />
+        </View>
+
+        {/* 🔥 NEW: Duration Input Field */}
+        <View style={styles.inputGroup}>
+          <Feather name="clock" size={18} color="#64748B" style={styles.inputIcon} />
+          <TextInput
+            placeholder="Duration (Minutes)"
+            value={duration}
+            onChangeText={setDuration}
+            style={styles.input}
+            keyboardType="number-pad"
+            placeholderTextColor="#94A3B8"
           />
         </View>
 

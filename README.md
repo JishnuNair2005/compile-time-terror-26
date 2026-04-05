@@ -138,3 +138,6 @@ Teachers receive **live aggregated insights** and can adjust their teaching in r
 npm install
 npx expo start
 
+ ####  Backend
+```bash
+uvicorn 

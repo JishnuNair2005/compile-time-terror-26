@@ -48,8 +48,9 @@ def update_device_metrics(device_id, question_type, is_ai_spam=False):
     dev_ref = db.collection("devices").document(device_id)
     
     # Weighted Scoring: AI Rejections = +2 spam points, 'Lost' clicks = +1, 'Got It' = 0
-    spam_increment = 2 if is_ai_spam else (1 if question_type == 1 else 0)
-
+    # 🔥 FIX: Only penalize if the AI explicitly flagged it as spam/off-topic.
+    # Legitimate 'Lost' votes (question_type == 1) should NOT increase the spam score!
+    spam_increment = 2 if is_ai_spam else 0
     try:
         snap = dev_ref.get()
         current_spam = 0
@@ -92,6 +93,13 @@ def update_responses_txn(transaction, session_ref, question_type, previous_type=
     Uses a Firestore transaction to safely increment counters, calculate emergency status, 
     and append the snapshot to the timeline array without race conditions.
     """
+    # 🔥 1. ZERO-CHANGE GUARD (SAVES FIRESTORE WRITES!)
+    # If the student just pressed the exact same button they pressed last time,
+    # the net change is 0. We completely abort the database write to save money.
+    if question_type == previous_type:
+        print("Net zero change detected. Aborting write to save Firebase costs.")
+        return 
+
     snapshot = session_ref.get(transaction=transaction)
     
     # Default state if document doesn't exist
@@ -102,26 +110,31 @@ def update_responses_txn(transaction, session_ref, question_type, previous_type=
     lost = data.get('lost', 0)
     timeline = data.get('timeline', [])
 
-    # Apply Increments
+    # 🔥 2. APPLY MATH
+    # Increments
     if question_type == 2: got_it += 1
     elif question_type == 0: sort_of += 1
     elif question_type == 1: lost += 1
 
-    # Apply Decrements (if user changed their mind)
+    # Decrements (Subtract their old vote)
     if previous_type == 2: got_it = max(0, got_it - 1)
     elif previous_type == 0: sort_of = max(0, sort_of - 1)
     elif previous_type == 1: lost = max(0, lost - 1)
 
-    # 🔥 NEW: Emergency Detection Logic
+    # 🔥 3. EMERGENCY DETECTION
     total = got_it + sort_of + lost
     lost_percent = (lost / total * 100) if total > 0 else 0
     is_emergency = lost_percent > 40 and total >= 10
 
-    # Format the timeline entry (e.g., "10:14 AM")
-    from datetime import datetime # Make sure this is imported at the top of your file
-    time_str = datetime.now().strftime("%I:%M %p")
+    # 🔥 4. THE 2-MINUTE BUCKET LOGIC
+    from datetime import datetime
+    current_time = datetime.now()
     
-    # Optimization: Only append if the minute has changed
+    # Round down to the nearest EVEN minute (e.g., 10:15 becomes 10:14)
+    bucket_minute = current_time.minute - (current_time.minute % 2)
+    time_str = current_time.replace(minute=bucket_minute, second=0).strftime("%I:%M %p")
+    
+    # Check if we need to create a new bucket, or just update the current 2-min bucket
     if len(timeline) == 0 or timeline[-1].get('time') != time_str:
         timeline.append({
             "time": time_str,
@@ -130,7 +143,7 @@ def update_responses_txn(transaction, session_ref, question_type, previous_type=
             "lost": lost
         })
     else:
-        # Update the existing minute's snapshot
+        # Overwrite the existing bucket with the newest totals
         timeline[-1] = {
             "time": time_str,
             "gotIt": got_it,
@@ -138,16 +151,15 @@ def update_responses_txn(transaction, session_ref, question_type, previous_type=
             "lost": lost
         }
 
-    # Save everything back to Firestore safely
+    # 🔥 5. SAVE EVERYTHING
     transaction.set(session_ref, {
         'gotIt': got_it,
         'sortOf': sort_of,
         'lost': lost,
-        'emergencyAlert': is_emergency, # 🔥 This flag triggers the React Native UI
+        'emergencyAlert': is_emergency, 
         'lastActiveAt': google_firestore.SERVER_TIMESTAMP,
         'timeline': timeline
     }, merge=True)
-
 
 # --- 4. MAIN PROCESSING ENGINE ---
 
@@ -165,7 +177,8 @@ def process_question(payload):
     # Step 3: Signal Handling (Empty Text / Just clicking 'Got It')
     if not payload.text or payload.text.strip() == "":
         txn = db.transaction()
-        update_responses_txn(txn, db.collection('responses').document(payload.sessionId), payload.questionType)
+        # 🔥 UPDATE: Added payload.previousType here
+        update_responses_txn(txn, db.collection('responses').document(payload.sessionId), payload.questionType, getattr(payload, 'previousType', None))
         update_device_metrics(payload.deviceId, payload.questionType, is_ai_spam=False)
         return {"success": True, "message": "Signal recorded."}
 
@@ -206,8 +219,10 @@ def process_question(payload):
         print(f"⚠️ AI Bouncer bypass due to error: {e}")
 
     # Step 5: Update Metrics (Transaction + Device Log)
+    # Step 5: Update Metrics (Transaction + Device Log)
     txn = db.transaction()
-    update_responses_txn(txn, db.collection('responses').document(payload.sessionId), payload.questionType)
+    # 🔥 UPDATE: Added payload.previousType here too!
+    update_responses_txn(txn, db.collection('responses').document(payload.sessionId), payload.questionType, getattr(payload, 'previousType', None))
     update_device_metrics(payload.deviceId, payload.questionType, is_ai_spam=False)
 
     # Step 6: Duplicate Clustering (The questions collection)

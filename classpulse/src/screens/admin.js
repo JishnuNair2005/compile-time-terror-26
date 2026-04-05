@@ -40,7 +40,8 @@ export default function TeacherDashboard({ route, navigation }) {
     subject = "Subject", 
     topic = "Topic", 
     teacherId, 
-    teacherName 
+    teacherName,
+    expiresAt
   } = route.params || {};
   
   const sId = String(sessionId);
@@ -48,8 +49,35 @@ export default function TeacherDashboard({ route, navigation }) {
   const [appStage, setAppStage] = useState("setup"); 
   const [activeTab, setActiveTab] = useState("dashboard");
   const [questions, setQuestions] = useState({}); 
-  const [stats, setStats] = useState({ gotIt: 0, sortOf: 0, lost: 0, total: 0, raw: { gotIt: 0, sortOf: 0, lost: 0 } });
   
+  // 🔥 ADD THIS LINE BACK IN!
+  const [stats, setStats] = useState({ gotIt: 0, sortOf: 0, lost: 0, total: 0, raw: { gotIt: 0, sortOf: 0, lost: 0 } });
+
+  // 🔥 NEW: Separate state for the AI sorted list
+  const [smartQuestions, setSmartQuestions] = useState(null); 
+  const [loadingQuestions, setLoadingQuestions] = useState(false);
+
+  // Updated Fetch Function
+  const fetchSmartSortedQuestions = async () => {
+    setLoadingQuestions(true);
+    try {
+      // NOTE: Make sure this IP matches your current backend IP!
+      const response = await fetch(`http://192.168.1.5:8000/api/sessions/${sId}/questions/smart-sort`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setSmartQuestions(data.data); // Save to the new state!
+        showCustomAlert("Questions organized by pedagogical priority!", "success");
+      }
+    } catch (e) {
+      console.error("Error fetching sorted questions:", e);
+      showCustomAlert("Failed to connect to AI.", "error");
+    } finally {
+      setLoadingQuestions(false);
+    }
+  };
+
+
   const [connectedCount, setConnectedCount] = useState(0);
   const [isDbSessionActive, setIsDbSessionActive] = useState(true); 
   const [isOfflineMode] = useState(false); 
@@ -81,7 +109,29 @@ export default function TeacherDashboard({ route, navigation }) {
       }).start(() => setCustomAlert({ visible: false, message: '', type: 'info' }));
     }, 3500);
   };
+ 
 
+  // 🔥 THE AUTO-KILL SWITCH
+  useEffect(() => {
+    // Only run this if we have an expiration time and the session is still active
+    if (!expiresAt || !isDbSessionActive || appStage !== "active") return;
+
+    const timeRemaining = expiresAt - Date.now();
+
+    if (timeRemaining <= 0) {
+      // If time is already up (e.g., they re-entered the room late), kill it immediately
+      handleEndSession(); 
+    } else {
+      // Set a timer to kill it exactly when the time runs out
+      const killTimer = setTimeout(() => {
+        Alert.alert("Time is Up!", "The session duration has expired. Generating summary...");
+        handleEndSession(); // This triggers your exact existing End Session function
+      }, timeRemaining);
+
+      // Cleanup the timer if they manually end the session early or leave the screen
+      return () => clearTimeout(killTimer);
+    }
+  }, [expiresAt, isDbSessionActive, appStage]);
   const getAlertIcon = () => {
     switch (customAlert.type) {
       case 'success': return { name: 'check', color: '#10B981', bg: 'rgba(16, 185, 129, 0.15)' };
@@ -281,7 +331,7 @@ export default function TeacherDashboard({ route, navigation }) {
         return; 
       }
 
-      const res = await fetch(`http://192.168.104.109:8000/api/sessions/${sId}/summary`);
+      const res = await fetch(`http://192.168.1.5:8000/api/sessions/${sId}/summary`);
       const data = await res.json();
       
       if (data.success) {
@@ -296,6 +346,8 @@ export default function TeacherDashboard({ route, navigation }) {
       setLoadingSummary(false);
     }
   };
+
+  
 
   // --- UI RENDERERS ---
   const renderAlert = () => {
@@ -379,21 +431,79 @@ export default function TeacherDashboard({ route, navigation }) {
               <MiniStat label="SESSION ID" value={sId} />
             </View>
           </>
-        ) : (
+       ) : (
           <>
-            <Text style={styles.sectionTitle}>Question Panel</Text>
-            {Object.keys(questions).length === 0 ? (
-              <View style={styles.emptyState}><Feather name="coffee" size={50} color="#CBD5E1" /><Text style={styles.emptyText}>No pending questions.</Text></View>
-            ) : (
-              Object.entries(questions).map(([concept, questionsArray]) => (
-                <View key={concept} style={{ marginBottom: 25 }}>
-                  <View style={styles.conceptHeader}><Text style={styles.conceptTitle}>{concept.toUpperCase()}</Text></View>
-                  {questionsArray.map((q) => (
-                    <QuestionCard key={q.id} count={q.count} text={q.text} type={q.type} onDismiss={() => dismissQuestion(q.id)} />
-                  ))}
-                  <View style={styles.horizontalLine} />
+            {/* 🔥 NEW HEADER WITH AI BUTTON */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, marginBottom: 15 }}>
+              <Text style={[styles.sectionTitle, { marginVertical: 0 }]}>Question Panel</Text>
+              <TouchableOpacity style={styles.smartSortBtn} onPress={fetchSmartSortedQuestions}>
+                <Feather name="cpu" size={16} color="white" />
+                <Text style={styles.smartSortBtnText}>AI Sort</Text>
+              </TouchableOpacity>
+            </View>
+
+            {loadingQuestions ? (
+              <View style={styles.emptyState}>
+                <ActivityIndicator size="large" color="#000066" />
+                <Text style={styles.emptyText}>AI is analyzing teaching order...</Text>
+              </View>
+            ) : smartQuestions ? (
+              
+              // 🔥 THE NEW AI-SORTED VIEW
+              <View>
+                <View style={{ backgroundColor: '#EEF2FF', padding: 12, borderRadius: 10, marginBottom: 15 }}>
+                  <Text style={{ color: '#4338CA', fontSize: 12, fontWeight: 'bold', textAlign: 'center' }}>
+                    Sorted by Foundational Concepts ➔ Advanced 
+                  </Text>
                 </View>
-              ))
+                
+                {smartQuestions.length === 0 && <Text style={styles.emptyText}>No questions to sort.</Text>}
+                
+                {smartQuestions.map((q, index) => (
+                  <View key={`${q.id}-${index}`} style={styles.smartQuestionCard}>
+                    <View style={styles.qHeader}>
+                      <View style={styles.conceptBadge}>
+                        <Text style={styles.conceptText}>{q.conceptTag || "General"}</Text>
+                      </View>
+                      <View style={[styles.countBadge, q.count > 1 ? {backgroundColor: '#FEF2F2', borderColor: '#FECACA'} : {}]}>
+                        <Text style={[styles.countText, q.count > 1 ? {color: '#EF4444'} : {}]}>
+                          {q.count > 1 ? `🔥 Asked by ${q.count}` : 'Asked by 1'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.smartQuestionText}>{q.text}</Text>
+                    
+                    <TouchableOpacity style={styles.resolveBtn} onPress={() => {
+                        dismissQuestion(q.id);
+                        // Hide it immediately from the smart list to keep UI snappy
+                        setSmartQuestions(prev => prev.filter(item => item.id !== q.id));
+                    }}>
+                      <Feather name="check" size={16} color="#10B981" />
+                      <Text style={styles.resolveText}>Mark as Explained</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+
+            ) : (
+              // ⏳ THE ORIGINAL REAL-TIME FEED (Fallback if AI hasn't been clicked yet)
+              Object.keys(questions).length === 0 ? (
+                <View style={styles.emptyState}>
+                  <Feather name="coffee" size={50} color="#CBD5E1" />
+                  <Text style={styles.emptyText}>No pending questions.</Text>
+                </View>
+              ) : (
+                Object.entries(questions).map(([concept, questionsArray]) => (
+                  <View key={concept} style={{ marginBottom: 25 }}>
+                    <View style={styles.conceptHeader}><Text style={styles.conceptTitle}>{concept.toUpperCase()}</Text></View>
+                    {questionsArray.map((q) => (
+                      <QuestionCard key={q.id} count={q.count} text={q.text} type={q.type} onDismiss={() => dismissQuestion(q.id)} />
+                    ))}
+                    <View style={styles.horizontalLine} />
+                  </View>
+                ))
+              )
             )}
           </>
         )}
@@ -604,4 +714,29 @@ const styles = StyleSheet.create({
   customAlertBox: { position: 'absolute', top: 0, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 100, gap: 12, zIndex: 9999, elevation: 12, backgroundColor: '#1E293B', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 12, borderWidth: 1, borderColor: '#334155', maxWidth: '90%' },
   alertIconContainer: { width: 28, height: 28, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
   customAlertText: { color: 'white', fontWeight: '600', fontSize: 14, paddingRight: 8, flexShrink: 1 },
+  // 🔥 AI SMART SORT STYLES
+  smartSortBtn: {
+    flexDirection: 'row',
+    backgroundColor: '#6366F1', // Nice vibrant AI purple/blue
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 100,
+    alignItems: 'center',
+    gap: 6,
+    elevation: 2,
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+  },
+  smartSortBtnText: { color: 'white', fontWeight: 'bold', fontSize: 12, letterSpacing: 0.5 },
+  smartQuestionCard: { backgroundColor: '#FFFFFF', padding: 18, borderRadius: 20, marginBottom: 15, borderWidth: 1, borderColor: '#E2E8F0', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 3 },
+  qHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
+  conceptBadge: { backgroundColor: '#EEF2FF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  conceptText: { color: '#4338CA', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
+  countBadge: { backgroundColor: '#F1F5F9', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#E2E8F0' },
+  countText: { color: '#e5e8eb', fontSize: 11, fontWeight: '800' },
+  smartQuestionText: { fontSize: 16, color: '#1E293B', lineHeight: 24, marginBottom: 18, fontWeight: '500' },
+  resolveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, backgroundColor: '#ECFDF5', borderRadius: 12, borderWidth: 1, borderColor: '#A7F3D0' },
+  resolveText: { color: '#10B981', fontWeight: 'bold', fontSize: 14 },
 });

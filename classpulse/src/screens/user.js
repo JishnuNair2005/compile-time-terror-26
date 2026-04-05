@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Animated,
   Alert,
+  BackHandler,
   Modal,
   Linking
 } from 'react-native';
@@ -22,7 +23,7 @@ import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../services/firebase';
 
 const { width } = Dimensions.get('window');
-const API_URL = 'http://192.168.1.2:8000/api/questions';
+const API_URL = 'http://192.168.1.5:8000/api/questions';
 
 export default function UserScreen() {
   // --- STATE MANAGEMENT ---
@@ -56,14 +57,45 @@ export default function UserScreen() {
   const hasScanned = useRef(false);
 
   // --- INITIALIZATION ---
+  // --- INITIALIZATION & REFRESH RECOVERY ---
   useEffect(() => {
     const initApp = async () => {
+      // 1. Recover Device ID
       let id = await AsyncStorage.getItem("deviceId");
       if (!id) {
         id = "device_" + Math.random().toString(36).substring(2, 12);
         await AsyncStorage.setItem("deviceId", id);
       }
       setDeviceId(id);
+
+      // 2. Recover Active Session
+      const savedSession = await AsyncStorage.getItem("activeSessionCode");
+      if (savedSession) {
+        setCode(savedSession.split(''));
+        verifyAndJoin(savedSession, true); // Silently rejoin them in the background
+      }
+
+      // 3. Recover Vote State
+      const savedLastVote = await AsyncStorage.getItem("lastSubmittedStatus");
+      if (savedLastVote) setLastSubmittedStatus(savedLastVote);
+
+      const savedStatus = await AsyncStorage.getItem("currentStatus");
+      if (savedStatus) setStatus(savedStatus);
+
+      // 4. Recover the Timer (Using absolute time, not relative seconds!)
+      const lockExpiry = await AsyncStorage.getItem("lockExpiresAt");
+      if (lockExpiry) {
+        const remainingSeconds = Math.floor((parseInt(lockExpiry) - Date.now()) / 1000);
+        if (remainingSeconds > 0) {
+          setTimeLeft(remainingSeconds);
+          setIsLocked(true);
+        } else {
+          // Time already ran out while they were refreshing
+          await AsyncStorage.removeItem("lockExpiresAt");
+          setIsLocked(false);
+          setStatus(null);
+        }
+      }
     };
     initApp();
   }, []);
@@ -98,7 +130,7 @@ export default function UserScreen() {
     if (timeLeft > 0) {
       timerRef.current = setInterval(() => {
         setTimeLeft((prev) => prev - 1);
-      }, 1000); // Fixed from 1ms to 1000ms (1 second)
+      }, 1); // Fixed from 1ms to 1000ms (1 second)
     } else if (timeLeft === 0 && isLocked) {
       setIsLocked(false);
       setStatus(null); 
@@ -166,7 +198,10 @@ export default function UserScreen() {
       const response = await fetchWithTimeout(joinUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId: deviceId }) 
+        // 🔥 THE FIX: Fallback to a temporary string if deviceId is still loading
+        body: JSON.stringify({ 
+            deviceId: deviceId || "temp_" + Math.random().toString(36).substring(2, 12) 
+        }) 
       });
       
       const data = await response.json();
@@ -174,7 +209,6 @@ export default function UserScreen() {
       if (response.ok && data.valid) {
         await AsyncStorage.setItem("activeSessionCode", sessionCodeToVerify);
         
-        // 🔥 UPDATE: Save the full metadata returned from your Python backend
         if (data.subject) setCurrentSubject(data.subject);
         if (data.topic) setCurrentTopic(data.topic);
         if (data.teacherId) setCurrentTeacherId(data.teacherId);
@@ -182,7 +216,10 @@ export default function UserScreen() {
         showCustomAlert(`Joined Session ${sessionCodeToVerify}`, "success");
         setIsJoined(true);
       } else {
-        showCustomAlert("Invalid Session Code", "error");
+        // 🔥 THE FIX: Now it will show the EXACT error from Python!
+        // It will say "Session not found" or "This session has ended"
+        showCustomAlert(data.message || "Invalid Session Code", "error"); 
+        
         if (isBackground) setIsJoined(false); 
         setCode(['', '', '', '']);
         if (inputRefs[0].current) inputRefs[0].current.focus();
@@ -205,10 +242,17 @@ export default function UserScreen() {
   };
 
   const forceLeaveSession = async () => {
+    // 🔥 Wipe everything from storage
     await AsyncStorage.removeItem("activeSessionCode");
+    await AsyncStorage.removeItem("lastSubmittedStatus");
+    await AsyncStorage.removeItem("currentStatus");
+    await AsyncStorage.removeItem("lockExpiresAt");
+
+    // Reset React State
     setIsJoined(false);
     setCode(['', '', '', '']);
     setStatus(null);
+    setLastSubmittedStatus(null);
     setConfusion('');
     setIsLocked(false);
     setTimeLeft(0);
@@ -221,6 +265,27 @@ export default function UserScreen() {
     ]);
   };
 
+  // --- HARDWARE BACK BUTTON INTERCEPT ---
+  useEffect(() => {
+    const backAction = () => {
+      // If they are in a session, intercept the back button
+      if (isJoined) {
+        leaveSession(); // Trigger your existing confirmation popup
+        return true;    // Return true to STOP the default back navigation
+      }
+      // If they are NOT joined, let the back button work normally
+      return false; 
+    };
+
+    const backHandler = BackHandler.addEventListener(
+      'hardwareBackPress',
+      backAction
+    );
+
+    // Cleanup the event listener when the component unmounts or state changes
+    return () => backHandler.remove();
+  }, [isJoined]); // Re-run this effect whenever their joined status changes
+  // --- SUBMIT QUESTION ---
   // --- SUBMIT QUESTION ---
   const submitQuestionToBackend = async (overrideStatus = null) => {
     const currentStatus = overrideStatus || status;
@@ -229,11 +294,17 @@ export default function UserScreen() {
       return;
     }
 
+    // Map the new vote to a number
     const currentQType = currentStatus === 'clear' ? 2 : currentStatus === 'sort-of' ? 0 : 1;
+    
+    // 🔥 THE FIX: Look at the app's memory to see what they voted last time
+    let prevQType = null;
+    if (lastSubmittedStatus) {
+      prevQType = lastSubmittedStatus === 'clear' ? 2 : lastSubmittedStatus === 'sort-of' ? 0 : 1;
+    }
 
     setIsSubmitting(true);
     try {
-      // 🔥 UPDATE: Enhanced payload exactly matching the schema requirements
       const payload = {
         sessionId: code.join(''),
         deviceId: deviceId || "temp_" + Math.random().toString(36).substring(2, 12),
@@ -241,7 +312,8 @@ export default function UserScreen() {
         subject: currentSubject,
         topic: currentTopic,
         text: currentStatus === 'clear' ? "" : confusion.trim(),
-        questionType: currentQType, // Mapped to schema: 0 (Sort Of), 1 (Lost), 2 (Got It)
+        questionType: currentQType, 
+        previousType: prevQType, // 🔥 NOW IT SENDS THE OLD VOTE!
         computeMode: isOfflineMode ? 'tfidf' : 'openai'
       };
 
@@ -253,12 +325,23 @@ export default function UserScreen() {
 
       const data = await response.json();
 
-      if (response.ok && data.success) {
+     if (response.ok && data.success) {
         showCustomAlert("Feedback Sent!", "success");
+        
+        // Update React State
         setLastSubmittedStatus(currentStatus); 
         setTimeLeft(90); 
         setIsLocked(true);
-      } else {
+
+        // 🔥 Save to AsyncStorage so it survives a refresh!
+        await AsyncStorage.setItem("lastSubmittedStatus", currentStatus);
+        await AsyncStorage.setItem("currentStatus", currentStatus);
+        
+        // Calculate the exact millisecond the timer will end
+        const expiryTime = Date.now() + (90 * 1000); 
+        await AsyncStorage.setItem("lockExpiresAt", expiryTime.toString());
+
+      }else {
         showCustomAlert(data.message || "Rejected", "error");
       }
     } catch (e) {
